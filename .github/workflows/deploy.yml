@@ -1,0 +1,105 @@
+name: Deploy Application
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  BACKEND_IMAGE: ghcr.io/${{ github.repository }}/backend
+  FRONTEND_IMAGE: ghcr.io/${{ github.repository }}/frontend
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Backend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          push: true
+          tags: |
+            ${{ env.BACKEND_IMAGE }}:latest
+            ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+
+      - name: Build and push Frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: true
+          tags: |
+            ${{ env.FRONTEND_IMAGE }}:latest
+            ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
+
+  deploy-railway:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: vars.DEPLOY_TARGET == 'railway'
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+        
+      - name: Deploy to Railway
+        run: railway up --service backend
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
+  deploy-cloud-run:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: vars.DEPLOY_TARGET == 'gcp'
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Google Auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for GCP
+        run: gcloud auth configure-docker
+
+      - name: Deploy Backend to Cloud Run
+        run: |
+          gcloud run deploy labelling-backend \
+            --image ${{ env.BACKEND_IMAGE }}:${{ github.sha }} \
+            --platform managed \
+            --region ${{ vars.GCP_REGION || 'europe-west2' }} \
+            --allow-unauthenticated \
+            --set-env-vars "DATABASE_URL=${{ secrets.DATABASE_URL }}" \
+            --set-env-vars "GSV_API_KEY=${{ secrets.GSV_API_KEY }}" \
+            --set-env-vars "GCS_BUCKET_NAME=${{ secrets.GCS_BUCKET_NAME }}"
+
+      - name: Deploy Frontend to Cloud Run
+        run: |
+          gcloud run deploy labelling-frontend \
+            --image ${{ env.FRONTEND_IMAGE }}:${{ github.sha }} \
+            --platform managed \
+            --region ${{ vars.GCP_REGION || 'europe-west2' }} \
+            --allow-unauthenticated
+
+

@@ -1,0 +1,105 @@
+services:
+  # PostgreSQL with PostGIS
+  db:
+    image: postgis/postgis:15-3.3
+    container_name: labelling_db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: labelling_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Redis for Celery
+  redis:
+    image: redis:7-alpine
+    container_name: labelling_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # FastAPI Backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: labelling_backend
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/labelling_db
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - GSV_API_KEY=${GSV_API_KEY}
+      - GCS_BUCKET_NAME=${GCS_BUCKET_NAME:-labelling-images}
+      - GCS_CREDENTIALS_PATH=/app/credentials/rad-labelling-3391aa18ba53.json
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - ./credentials:/app/credentials:ro
+      - shapefile_data:/app/shapefiles
+    # Increased timeout for large file uploads
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --timeout-keep-alive 300
+
+  # Celery Worker
+  celery_worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: labelling_celery
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/labelling_db
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - shapefile_data:/app/shapefiles
+    command: celery -A app.tasks.celery_tasks worker --loglevel=info
+
+  # React Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: labelling_frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - VITE_API_URL=http://localhost:8000
+      - VITE_GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - VITE_GSV_API_KEY=${GSV_API_KEY}
+
+volumes:
+  postgres_data:
+  redis_data:
+  shapefile_data:
+

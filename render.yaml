@@ -1,0 +1,42 @@
+services:
+  # Backend API
+  - type: web
+    name: labelling-backend
+    env: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: labelling-db
+          property: connectionString
+      - key: GSV_API_KEY
+        sync: false
+      - key: GCS_BUCKET_NAME
+        sync: false
+      - key: GCS_CREDENTIALS_PATH
+        sync: false
+    healthCheckPath: /health
+
+  # Frontend
+  - type: web
+    name: labelling-frontend
+    env: docker
+    dockerfilePath: ./frontend/Dockerfile
+    dockerContext: ./frontend
+    envVars:
+      - key: VITE_API_URL
+        fromService:
+          type: web
+          name: labelling-backend
+          envVarKey: RENDER_EXTERNAL_URL
+      - key: VITE_GSV_API_KEY
+        sync: false
+
+databases:
+  - name: labelling-db
+    databaseName: labelling_db
+    user: labelling_user
+    plan: free
+    postgresMajorVersion: 15
+

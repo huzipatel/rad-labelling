@@ -1,0 +1,74 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - GSV_API_KEY=${GSV_API_KEY}
+      - GCS_BUCKET_NAME=${GCS_BUCKET_NAME}
+      - GCS_CREDENTIALS_PATH=${GCS_CREDENTIALS_PATH}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - LOCAL_STORAGE_PATH=/app/local_storage
+    volumes:
+      - backend_storage:/app/local_storage
+      - ${GCS_CREDENTIALS_PATH:-./credentials}:/app/credentials:ro
+    depends_on:
+      - redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  frontend:
+    build: 
+      context: ./frontend
+      args:
+        - VITE_API_URL=${VITE_API_URL:-/api/v1}
+        - VITE_GSV_API_KEY=${VITE_GSV_API_KEY}
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  celery_worker:
+    build: ./backend
+    command: celery -A app.tasks.celery_tasks worker --loglevel=info
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - GSV_API_KEY=${GSV_API_KEY}
+      - GCS_BUCKET_NAME=${GCS_BUCKET_NAME}
+      - GCS_CREDENTIALS_PATH=${GCS_CREDENTIALS_PATH}
+      - LOCAL_STORAGE_PATH=/app/local_storage
+    volumes:
+      - backend_storage:/app/local_storage
+      - ${GCS_CREDENTIALS_PATH:-./credentials}:/app/credentials:ro
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+volumes:
+  backend_storage:
+  redis_data:
+
+
