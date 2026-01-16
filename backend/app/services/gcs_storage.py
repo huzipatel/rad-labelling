@@ -1,5 +1,6 @@
 """Google Cloud Storage service with organized folder structure."""
 import os
+import json
 from typing import Optional
 from pathlib import Path
 from datetime import datetime
@@ -20,14 +21,15 @@ class GCSStorage:
         self.bucket_name = settings.GCS_BUCKET_NAME
         self._client = None
         self._bucket = None
-        self._use_local = not settings.GCS_CREDENTIALS_PATH
+        # Use GCS if either JSON credentials or file path is provided
+        self._use_local = not (settings.GCS_CREDENTIALS_JSON or settings.GCS_CREDENTIALS_PATH)
         self._local_storage_path = Path(settings.UPLOAD_DIR) / "images"
         
         # Create local storage directory if using local mode
         if self._use_local:
             self._local_storage_path.mkdir(parents=True, exist_ok=True)
             print(f"[GCSStorage] Using LOCAL storage at {self._local_storage_path}")
-            print(f"[GCSStorage] To use GCS, set GCS_CREDENTIALS_PATH environment variable")
+            print(f"[GCSStorage] To use GCS, set GCS_CREDENTIALS_JSON or GCS_CREDENTIALS_PATH")
         else:
             print(f"[GCSStorage] Using Google Cloud Storage bucket: {self.bucket_name}")
     
@@ -42,14 +44,23 @@ class GCSStorage:
                 from google.cloud import storage
                 from google.oauth2 import service_account
                 
-                if settings.GCS_CREDENTIALS_PATH and os.path.exists(settings.GCS_CREDENTIALS_PATH):
+                # Option 1: JSON string in environment variable (best for cloud deployments)
+                if settings.GCS_CREDENTIALS_JSON:
+                    credentials_info = json.loads(settings.GCS_CREDENTIALS_JSON)
+                    credentials = service_account.Credentials.from_service_account_info(
+                        credentials_info
+                    )
+                    self._client = storage.Client(credentials=credentials)
+                    print(f"[GCSStorage] Connected to GCS with JSON credentials")
+                # Option 2: File path (for local development)
+                elif settings.GCS_CREDENTIALS_PATH and os.path.exists(settings.GCS_CREDENTIALS_PATH):
                     credentials = service_account.Credentials.from_service_account_file(
                         settings.GCS_CREDENTIALS_PATH
                     )
                     self._client = storage.Client(credentials=credentials)
-                    print(f"[GCSStorage] Connected to GCS with service account")
+                    print(f"[GCSStorage] Connected to GCS with service account file")
                 else:
-                    # Try default credentials
+                    # Try default credentials (GOOGLE_APPLICATION_CREDENTIALS env var)
                     self._client = storage.Client()
                     print(f"[GCSStorage] Connected to GCS with default credentials")
             except Exception as e:

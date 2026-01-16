@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     # Google Cloud Storage
     GCS_BUCKET_NAME: str = "labelling-images"
     GCS_CREDENTIALS_PATH: Optional[str] = None
+    GCS_CREDENTIALS_JSON: Optional[str] = None  # JSON string for cloud deployments
     
     # Twilio WhatsApp
     TWILIO_ACCOUNT_SID: str = ""
