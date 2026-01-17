@@ -7,6 +7,20 @@ from sqlalchemy import MetaData
 from app.core.config import settings
 
 
+def get_async_database_url(url: str) -> str:
+    """
+    Convert database URL to async format for SQLAlchemy.
+    
+    Render/Heroku provide: postgres://user:pass@host:5432/db
+    SQLAlchemy asyncpg needs: postgresql+asyncpg://user:pass@host:5432/db
+    """
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql+asyncpg://", 1)
+    elif url.startswith("postgresql://"):
+        url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    return url
+
+
 # Naming convention for constraints
 convention = {
     "ix": "ix_%(column_0_label)s",
@@ -24,9 +38,13 @@ class Base(DeclarativeBase):
     metadata = metadata
 
 
+# Convert DATABASE_URL to async format
+database_url = get_async_database_url(settings.DATABASE_URL)
+print(f"[Database] Connecting to: {database_url.split('@')[1] if '@' in database_url else 'configured database'}")
+
 # Create async engine
 engine = create_async_engine(
-    settings.DATABASE_URL,
+    database_url,
     echo=settings.DEBUG,
     pool_size=settings.DATABASE_POOL_SIZE,
     max_overflow=settings.DATABASE_MAX_OVERFLOW,
