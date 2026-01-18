@@ -1075,8 +1075,14 @@ async def assign_task(
     # Start image download if not already done
     if task.status == "pending":
         task.status = "downloading"
-        # Trigger background download
-        background_tasks.add_task(download_task_images, str(task.id))
+        # Trigger background download via Celery
+        try:
+            from app.tasks.celery_tasks import download_task_images_celery
+            download_task_images_celery.delay(str(task.id))
+        except Exception as e:
+            # Fallback to inline background task if Celery unavailable
+            print(f"Celery unavailable, using inline task: {e}")
+            background_tasks.add_task(download_task_images, str(task.id))
     
     await db.commit()
     
@@ -1117,7 +1123,13 @@ async def bulk_assign_tasks(
             
             if task.status == "pending":
                 task.status = "downloading"
-                background_tasks.add_task(download_task_images, str(task.id))
+                # Trigger background download via Celery
+                try:
+                    from app.tasks.celery_tasks import download_task_images_celery
+                    download_task_images_celery.delay(str(task.id))
+                except Exception as e:
+                    # Fallback to inline background task if Celery unavailable
+                    background_tasks.add_task(download_task_images, str(task.id))
             
             assigned_count += 1
     
@@ -1198,8 +1210,13 @@ async def trigger_image_download(
     await db.commit()
     await db.refresh(download_log)
     
-    # Trigger background download
-    background_tasks.add_task(download_task_images, str(task.id), str(download_log.id))
+    # Trigger background download via Celery
+    try:
+        from app.tasks.celery_tasks import download_task_images_celery
+        download_task_images_celery.delay(str(task.id), str(download_log.id))
+    except Exception as e:
+        print(f"Celery unavailable, using inline task: {e}")
+        background_tasks.add_task(download_task_images, str(task.id), str(download_log.id))
     
     return {
         "message": "Image download started",
@@ -1365,8 +1382,13 @@ async def resume_download(
     await db.commit()
     await db.refresh(download_log)
     
-    # Start background download (will skip already downloaded images)
-    background_tasks.add_task(download_task_images, str(task_id), str(download_log.id))
+    # Start background download via Celery (will skip already downloaded images)
+    try:
+        from app.tasks.celery_tasks import download_task_images_celery
+        download_task_images_celery.delay(str(task_id), str(download_log.id))
+    except Exception as e:
+        print(f"Celery unavailable, using inline task: {e}")
+        background_tasks.add_task(download_task_images, str(task_id), str(download_log.id))
     
     return {
         "message": "Download resumed",
@@ -1452,9 +1474,14 @@ async def restart_download(
     await db.commit()
     await db.refresh(download_log)
     
-    # Start background download
-    if background_tasks:
-        background_tasks.add_task(download_task_images, str(task_id), str(download_log.id))
+    # Start background download via Celery
+    try:
+        from app.tasks.celery_tasks import download_task_images_celery
+        download_task_images_celery.delay(str(task_id), str(download_log.id))
+    except Exception as e:
+        print(f"Celery unavailable, using inline task: {e}")
+        if background_tasks:
+            background_tasks.add_task(download_task_images, str(task_id), str(download_log.id))
     
     return {
         "message": f"Download {'restarted (forced)' if force else 'restarted'}",

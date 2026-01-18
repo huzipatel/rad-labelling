@@ -36,92 +36,206 @@ def run_async(coro):
 
 
 @celery_app.task(bind=True, name="download_task_images")
-def download_task_images(self, task_id: str):
+def download_task_images_celery(self, task_id: str, download_log_id: str = None):
     """
     Download Google Street View images for all locations in a task.
     
     This is a long-running task that updates progress as it goes.
+    Handles download logs, progress tracking, and error recovery.
     """
     from app.core.database import async_session_maker
     from app.models.task import Task
     from app.models.location import Location
     from app.models.gsv_image import GSVImage
+    from app.models.download_log import DownloadLog
     from app.services.gsv_downloader import GSVDownloader
-    from sqlalchemy import select
+    from sqlalchemy import select, and_
+    from sqlalchemy.orm import selectinload
+    from datetime import datetime
+    import traceback
     
     async def _download():
+        print(f"[Celery GSV Download] Starting download for task {task_id}")
+        
         async with async_session_maker() as db:
-            # Get task
+            # Get task with location type
             result = await db.execute(
-                select(Task).where(Task.id == UUID(task_id))
+                select(Task).options(selectinload(Task.location_type)).where(Task.id == UUID(task_id))
             )
             task = result.scalar_one_or_none()
             
             if not task:
                 return {"error": "Task not found"}
             
-            # Get locations for this task
-            locations_result = await db.execute(
-                select(Location).where(
-                    Location.location_type_id == task.location_type_id,
-                    Location.council == task.council
+            # Get or create download log
+            download_log = None
+            if download_log_id:
+                log_result = await db.execute(
+                    select(DownloadLog).where(DownloadLog.id == UUID(download_log_id))
                 )
-            )
-            locations = locations_result.scalars().all()
+                download_log = log_result.scalar_one_or_none()
             
-            # Download images
-            downloader = GSVDownloader()
-            total = len(locations) * 4  # 4 images per location
-            downloaded = 0
+            if not download_log:
+                download_log = DownloadLog(
+                    task_id=task.id,
+                    status="running",
+                    started_at=datetime.utcnow()
+                )
+                db.add(download_log)
+                await db.commit()
+                await db.refresh(download_log)
+            else:
+                download_log.status = "running"
+                download_log.started_at = datetime.utcnow()
+                await db.commit()
             
-            for loc in locations:
-                try:
-                    images = await downloader.download_all_headings(
-                        loc.id,
-                        loc.identifier,
-                        loc.latitude,
-                        loc.longitude
-                    )
-                    
-                    # Save image records
-                    for img_data in images:
-                        gsv_image = GSVImage(
-                            location_id=img_data["location_id"],
-                            heading=img_data["heading"],
-                            gcs_path=img_data["gcs_path"],
-                            gcs_url=img_data["gcs_url"],
-                            capture_date=img_data["capture_date"],
-                            pano_id=img_data["pano_id"]
+            # Update task status
+            task.status = "downloading"
+            await db.commit()
+            
+            try:
+                # Get location type info
+                location_type_name = task.location_type.name if task.location_type else "unknown"
+                
+                # Build location query based on task grouping
+                if task.group_field and task.group_value:
+                    if task.group_field == "council":
+                        location_query = select(Location).where(
+                            and_(
+                                Location.location_type_id == task.location_type_id,
+                                Location.council == task.group_value
+                            )
                         )
-                        db.add(gsv_image)
-                        downloaded += 1
+                    elif task.group_field == "combined_authority":
+                        location_query = select(Location).where(
+                            and_(
+                                Location.location_type_id == task.location_type_id,
+                                Location.combined_authority == task.group_value
+                            )
+                        )
+                    else:
+                        location_query = select(Location).where(
+                            and_(
+                                Location.location_type_id == task.location_type_id,
+                                Location.council == task.council
+                            )
+                        )
+                else:
+                    location_query = select(Location).where(
+                        and_(
+                            Location.location_type_id == task.location_type_id,
+                            Location.council == task.council
+                        )
+                    )
+                
+                locations_result = await db.execute(location_query)
+                locations = locations_result.scalars().all()
+                
+                total_locations = len(locations)
+                download_log.total_locations = total_locations
+                await db.commit()
+                
+                print(f"[Celery GSV Download] Found {total_locations} locations to process")
+                
+                # Initialize downloader
+                downloader = GSVDownloader()
+                
+                images_downloaded = 0
+                failed_downloads = 0
+                skipped_existing = 0
+                processed = 0
+                
+                for location in locations:
+                    processed += 1
+                    download_log.processed_locations = processed
+                    download_log.current_location_id = location.id
+                    download_log.current_location_identifier = location.identifier
                     
-                    # Update task progress
-                    task.images_downloaded = downloaded
+                    # Check if images already exist for this location
+                    existing_result = await db.execute(
+                        select(GSVImage).where(GSVImage.location_id == location.id)
+                    )
+                    existing_images = existing_result.scalars().all()
+                    
+                    if existing_images:
+                        skipped_existing += len(existing_images)
+                        download_log.skipped_existing = skipped_existing
+                        continue
+                    
+                    try:
+                        location_council = location.council or task.group_value or "unspecified"
+                        
+                        downloaded = await downloader.download_images_for_location(
+                            db=db,
+                            location_id=location.id,
+                            latitude=location.latitude,
+                            longitude=location.longitude,
+                            identifier=location.identifier,
+                            location_type=location_type_name,
+                            council=location_council
+                        )
+                        images_downloaded += downloaded
+                        download_log.successful_downloads += downloaded
+                        
+                    except Exception as e:
+                        print(f"[Celery GSV Download] Error for {location.identifier}: {e}")
+                        failed_downloads += 1
+                        download_log.failed_downloads = failed_downloads
+                        download_log.last_error = str(e)
+                        download_log.error_count += 1
+                    
+                    # Update progress
+                    task.images_downloaded = images_downloaded
                     await db.commit()
                     
                     # Update Celery task state
+                    percent = int((processed / total_locations) * 100) if total_locations > 0 else 0
                     self.update_state(
                         state="PROGRESS",
                         meta={
-                            "current": downloaded,
-                            "total": total,
-                            "percent": int((downloaded / total) * 100)
+                            "current": processed,
+                            "total": total_locations,
+                            "images_downloaded": images_downloaded,
+                            "percent": percent
                         }
                     )
                     
-                except Exception as e:
-                    print(f"Error downloading images for {loc.identifier}: {e}")
-            
-            # Mark task as ready
-            task.status = "ready"
-            await db.commit()
-            
-            return {
-                "task_id": task_id,
-                "images_downloaded": downloaded,
-                "total": total
-            }
+                    # Log progress every 10 locations
+                    if processed % 10 == 0:
+                        print(f"[Celery GSV Download] Progress: {processed}/{total_locations}, {images_downloaded} images")
+                
+                # Mark task as ready
+                task.images_downloaded = images_downloaded
+                if task.status == "downloading":
+                    task.status = "ready"
+                
+                download_log.status = "completed"
+                download_log.completed_at = datetime.utcnow()
+                download_log.current_location_id = None
+                download_log.current_location_identifier = None
+                
+                await db.commit()
+                
+                print(f"[Celery GSV Download] Complete! {images_downloaded} images, {skipped_existing} skipped, {failed_downloads} failed")
+                
+                return {
+                    "task_id": task_id,
+                    "images_downloaded": images_downloaded,
+                    "skipped_existing": skipped_existing,
+                    "failed_downloads": failed_downloads,
+                    "total_locations": total_locations
+                }
+                
+            except Exception as e:
+                error_msg = f"Fatal error: {str(e)}\n{traceback.format_exc()}"
+                print(f"[Celery GSV Download] [ERROR] {error_msg}")
+                
+                download_log.status = "failed"
+                download_log.last_error = str(e)
+                task.status = "failed"
+                await db.commit()
+                
+                return {"error": str(e)}
     
     return run_async(_download())
 
