@@ -9,6 +9,13 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
+  css: {
+    preprocessorOptions: {
+      scss: {
+        quietDeps: true,
+      },
+    },
+  },
   server: {
     host: '0.0.0.0',
     port: 3000,
@@ -16,6 +23,15 @@ export default defineConfig({
       '/api': {
         target: process.env.VITE_API_URL || 'http://localhost:8000',
         changeOrigin: true,
+      },
+    },
+  },
+  build: {
+    rollupOptions: {
+      onwarn(warning, warn) {
+        // Suppress certain warnings
+        if (warning.code === 'MODULE_LEVEL_DIRECTIVE') return;
+        warn(warning);
       },
     },
   },
