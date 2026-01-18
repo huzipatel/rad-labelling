@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:5173"]
     
     # File Upload
-    MAX_UPLOAD_SIZE: int = 50 * 1024 * 1024  # 50MB for spreadsheets
+    MAX_UPLOAD_SIZE: int = 200 * 1024 * 1024  # 200MB for spreadsheets
     MAX_SHAPEFILE_SIZE: int = 10 * 1024 * 1024 * 1024  # 10GB for shapefiles/geopackages
     ALLOWED_EXTENSIONS: List[str] = [".xlsx", ".xls", ".csv"]
     ALLOWED_GEODATA_EXTENSIONS: List[str] = [".zip", ".gpkg"]
