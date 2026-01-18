@@ -75,6 +75,7 @@ credentials/
 !package.json
 !package-lock.json
 !tsconfig.json
+!tsconfig.node.json
 !railway.json
 
 # Logs
