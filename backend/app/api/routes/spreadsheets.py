@@ -1,6 +1,8 @@
 """Spreadsheet upload and management routes."""
 import uuid
+import os
 from typing import List, Optional
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -11,6 +13,7 @@ from app.core.config import settings
 from app.models.user import User
 from app.models.location import Location, LocationType
 from app.models.task import Task
+from app.models.shapefile import UploadJob
 from app.api.deps import require_manager
 from app.services.spreadsheet_parser import SpreadsheetParser
 from app.services.spatial_enhancer import SpatialEnhancer
@@ -48,6 +51,25 @@ class UploadResponse(BaseModel):
     location_type_id: str
     locations_created: int
     councils_found: List[str]
+
+
+class AsyncUploadResponse(BaseModel):
+    """Async spreadsheet upload response (for large files)."""
+    message: str
+    job_id: str
+    status: str
+    location_type_id: str
+
+
+class UploadJobStatus(BaseModel):
+    """Upload job status response."""
+    job_id: str
+    status: str
+    stage: str
+    progress_percent: int
+    error_message: Optional[str] = None
+    locations_created: Optional[int] = None
+    total_rows: Optional[int] = None
 
 
 class EnhanceRequest(BaseModel):
@@ -200,7 +222,7 @@ async def delete_location_type(
     }
 
 
-@router.post("/upload", response_model=UploadResponse)
+@router.post("/upload", response_model=AsyncUploadResponse)
 async def upload_spreadsheet(
     file: UploadFile = File(...),
     location_type_id: str = Form(...),
@@ -210,7 +232,12 @@ async def upload_spreadsheet(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_manager)
 ):
-    """Upload a spreadsheet of locations."""
+    """
+    Upload a spreadsheet of locations (async background processing).
+    
+    For large files, this saves the file and processes it in the background.
+    Returns a job ID that can be polled for status.
+    """
     # Validate file extension
     if file.filename:
         ext = "." + file.filename.split(".")[-1].lower()
@@ -232,46 +259,162 @@ async def upload_spreadsheet(
             detail="Location type not found"
         )
     
-    # Parse spreadsheet
-    parser = SpreadsheetParser()
+    # Save file to disk for background processing
+    upload_dir = os.path.join(settings.UPLOAD_DIR, "spreadsheets")
+    os.makedirs(upload_dir, exist_ok=True)
+    
+    file_id = str(uuid.uuid4())
+    file_ext = os.path.splitext(file.filename or "upload.csv")[1]
+    file_path = os.path.join(upload_dir, f"{file_id}{file_ext}")
+    
     try:
         contents = await file.read()
-        locations_data = parser.parse(
-            contents,
-            file.filename or "upload.xlsx",
-            lat_column=lat_column,
-            lng_column=lng_column,
-            identifier_column=identifier_column
-        )
+        with open(file_path, "wb") as f:
+            f.write(contents)
     except Exception as e:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Error parsing spreadsheet: {str(e)}"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error saving file: {str(e)}"
         )
     
-    # Create location records
-    councils_found = set()
-    locations_created = 0
-    
-    for loc_data in locations_data:
-        location = Location(
-            location_type_id=location_type.id,
-            identifier=loc_data["identifier"],
-            latitude=loc_data["latitude"],
-            longitude=loc_data["longitude"],
-            original_data=loc_data["original_data"]
-        )
-        db.add(location)
-        locations_created += 1
-    
-    await db.commit()
-    
-    return UploadResponse(
-        message=f"Successfully uploaded {locations_created} locations",
-        location_type_id=location_type_id,
-        locations_created=locations_created,
-        councils_found=list(councils_found)
+    # Create upload job record
+    job = UploadJob(
+        filename=file.filename or "upload.csv",
+        display_name=f"Spreadsheet upload: {file.filename}",
+        status="pending",
+        stage="Queued for processing",
+        total_bytes=len(contents),
+        uploaded_bytes=len(contents),
+        progress_percent=0,
+        file_path=file_path,
+        job_metadata={
+            "location_type_id": location_type_id,
+            "location_type_name": location_type.display_name,
+            "lat_column": lat_column,
+            "lng_column": lng_column,
+            "identifier_column": identifier_column,
+            "uploaded_by": str(current_user.id),
+            "file_size_mb": round(len(contents) / (1024 * 1024), 2)
+        }
     )
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
+    
+    # Queue background task
+    try:
+        from app.tasks.celery_tasks import process_spreadsheet_upload
+        process_spreadsheet_upload.delay(str(job.id))
+    except Exception as e:
+        # If Celery isn't available, process synchronously (fallback)
+        print(f"Warning: Celery not available, processing synchronously: {e}")
+        job.status = "processing"
+        job.stage = "Processing (sync mode)"
+        await db.commit()
+        
+        # Fallback to sync processing for small files
+        parser = SpreadsheetParser()
+        try:
+            locations_data = parser.parse(
+                contents,
+                file.filename or "upload.csv",
+                lat_column=lat_column,
+                lng_column=lng_column,
+                identifier_column=identifier_column
+            )
+            
+            locations_created = 0
+            for loc_data in locations_data:
+                location = Location(
+                    location_type_id=location_type.id,
+                    identifier=loc_data["identifier"],
+                    latitude=loc_data["latitude"],
+                    longitude=loc_data["longitude"],
+                    original_data=loc_data["original_data"]
+                )
+                db.add(location)
+                locations_created += 1
+            
+            await db.commit()
+            
+            job.status = "completed"
+            job.stage = f"Created {locations_created} locations"
+            job.progress_percent = 100
+            job.completed_at = datetime.utcnow()
+            job.job_metadata = {**job.job_metadata, "locations_created": locations_created}
+            await db.commit()
+            
+        except Exception as parse_error:
+            job.status = "failed"
+            job.error_message = str(parse_error)
+            await db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Error processing spreadsheet: {str(parse_error)}"
+            )
+    
+    return AsyncUploadResponse(
+        message="File uploaded successfully. Processing in background.",
+        job_id=str(job.id),
+        status=job.status,
+        location_type_id=location_type_id
+    )
+
+
+@router.get("/upload-jobs/{job_id}", response_model=UploadJobStatus)
+async def get_upload_job_status(
+    job_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_manager)
+):
+    """Get the status of a spreadsheet upload job."""
+    result = await db.execute(
+        select(UploadJob).where(UploadJob.id == job_id)
+    )
+    job = result.scalar_one_or_none()
+    
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Upload job not found"
+        )
+    
+    return UploadJobStatus(
+        job_id=str(job.id),
+        status=job.status,
+        stage=job.stage,
+        progress_percent=job.progress_percent,
+        error_message=job.error_message,
+        locations_created=job.job_metadata.get("locations_created"),
+        total_rows=job.job_metadata.get("total_rows")
+    )
+
+
+@router.get("/upload-jobs", response_model=List[UploadJobStatus])
+async def list_upload_jobs(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_manager)
+):
+    """List recent upload jobs."""
+    result = await db.execute(
+        select(UploadJob)
+        .order_by(UploadJob.created_at.desc())
+        .limit(20)
+    )
+    jobs = result.scalars().all()
+    
+    return [
+        UploadJobStatus(
+            job_id=str(job.id),
+            status=job.status,
+            stage=job.stage,
+            progress_percent=job.progress_percent,
+            error_message=job.error_message,
+            locations_created=job.job_metadata.get("locations_created"),
+            total_rows=job.job_metadata.get("total_rows")
+        )
+        for job in jobs
+    ]
 
 
 @router.post("/enhance", response_model=EnhanceResponse)

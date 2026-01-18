@@ -193,6 +193,162 @@ def enhance_locations(self, location_type_id: str):
     return run_async(_enhance())
 
 
+@celery_app.task(bind=True, name="process_spreadsheet_upload")
+def process_spreadsheet_upload(self, job_id: str):
+    """
+    Process a spreadsheet upload in the background.
+    
+    This handles large CSV/Excel files with hundreds of thousands of rows.
+    """
+    from app.core.database import async_session_maker
+    from app.models.shapefile import UploadJob
+    from app.models.location import Location, LocationType
+    from app.services.spreadsheet_parser import SpreadsheetParser
+    from sqlalchemy import select
+    from datetime import datetime
+    import os
+    
+    async def _process():
+        async with async_session_maker() as db:
+            # Get the upload job
+            result = await db.execute(
+                select(UploadJob).where(UploadJob.id == UUID(job_id))
+            )
+            job = result.scalar_one_or_none()
+            
+            if not job:
+                return {"error": "Upload job not found"}
+            
+            try:
+                # Update status
+                job.status = "processing"
+                job.stage = "Reading spreadsheet file"
+                await db.commit()
+                
+                # Get job metadata
+                metadata = job.job_metadata
+                location_type_id = metadata.get("location_type_id")
+                lat_column = metadata.get("lat_column", "Latitude")
+                lng_column = metadata.get("lng_column", "Longitude")
+                identifier_column = metadata.get("identifier_column", "ATCOCode")
+                
+                # Get location type
+                result = await db.execute(
+                    select(LocationType).where(LocationType.id == UUID(location_type_id))
+                )
+                location_type = result.scalar_one_or_none()
+                
+                if not location_type:
+                    raise Exception("Location type not found")
+                
+                # Read and parse the file
+                file_path = job.file_path
+                if not file_path or not os.path.exists(file_path):
+                    raise Exception(f"File not found: {file_path}")
+                
+                with open(file_path, "rb") as f:
+                    contents = f.read()
+                
+                job.stage = "Parsing spreadsheet data"
+                await db.commit()
+                
+                # Update Celery state
+                self.update_state(
+                    state="PROGRESS",
+                    meta={"stage": "Parsing spreadsheet", "percent": 10}
+                )
+                
+                parser = SpreadsheetParser()
+                locations_data = parser.parse(
+                    contents,
+                    os.path.basename(file_path),
+                    lat_column=lat_column,
+                    lng_column=lng_column,
+                    identifier_column=identifier_column
+                )
+                
+                total_rows = len(locations_data)
+                job.stage = f"Creating {total_rows:,} location records"
+                job.job_metadata = {**metadata, "total_rows": total_rows}
+                await db.commit()
+                
+                self.update_state(
+                    state="PROGRESS",
+                    meta={"stage": "Creating locations", "percent": 20, "total": total_rows}
+                )
+                
+                # Create location records in batches
+                locations_created = 0
+                batch_size = 1000
+                
+                for i in range(0, total_rows, batch_size):
+                    batch = locations_data[i:i + batch_size]
+                    
+                    for loc_data in batch:
+                        location = Location(
+                            location_type_id=location_type.id,
+                            identifier=loc_data["identifier"],
+                            latitude=loc_data["latitude"],
+                            longitude=loc_data["longitude"],
+                            original_data=loc_data["original_data"]
+                        )
+                        db.add(location)
+                        locations_created += 1
+                    
+                    # Commit batch
+                    await db.commit()
+                    
+                    # Update progress
+                    percent = 20 + int((locations_created / total_rows) * 75)
+                    job.stage = f"Created {locations_created:,} of {total_rows:,} locations"
+                    job.progress_percent = percent
+                    await db.commit()
+                    
+                    self.update_state(
+                        state="PROGRESS",
+                        meta={
+                            "stage": f"Creating locations ({locations_created:,}/{total_rows:,})",
+                            "percent": percent,
+                            "current": locations_created,
+                            "total": total_rows
+                        }
+                    )
+                
+                # Mark as completed
+                job.status = "completed"
+                job.stage = f"Successfully created {locations_created:,} locations"
+                job.progress_percent = 100
+                job.completed_at = datetime.utcnow()
+                job.job_metadata = {
+                    **metadata,
+                    "total_rows": total_rows,
+                    "locations_created": locations_created
+                }
+                await db.commit()
+                
+                # Clean up the temp file
+                try:
+                    os.remove(file_path)
+                except:
+                    pass
+                
+                return {
+                    "job_id": job_id,
+                    "locations_created": locations_created,
+                    "total_rows": total_rows
+                }
+                
+            except Exception as e:
+                job.status = "failed"
+                job.stage = "Upload failed"
+                job.error_message = str(e)
+                await db.commit()
+                
+                return {"error": str(e)}
+    
+    return run_async(_process())
+
+
 @celery_app.task(name="notify_task_completion")
 def notify_task_completion(task_id: str):
     """
