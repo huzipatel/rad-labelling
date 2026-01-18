@@ -2,7 +2,7 @@
 from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
-from sqlalchemy import MetaData
+from sqlalchemy import MetaData, text
 
 from app.core.config import settings
 
@@ -81,6 +81,12 @@ async def init_db() -> None:
         CouncilBoundary, CombinedAuthority, RoadClassification,
         Shapefile, EnhancementJob, UploadJob, DownloadLog
     )
+    
+    # Enable PostGIS extension first (required for geography/geometry types)
+    print("[Database] Enabling PostGIS extension...")
+    async with engine.begin() as conn:
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS postgis"))
+    print("[Database] PostGIS extension enabled")
     
     print("[Database] Creating tables...")
     async with engine.begin() as conn:
