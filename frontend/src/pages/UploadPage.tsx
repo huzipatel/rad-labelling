@@ -98,6 +98,16 @@ interface EnhancementJob {
   completed_at: string | null
 }
 
+interface UploadJobStatus {
+  job_id: string
+  status: 'pending' | 'processing' | 'completed' | 'failed'
+  stage: string
+  progress_percent: number
+  error_message: string | null
+  locations_created: number | null
+  total_rows: number | null
+}
+
 const defaultBusStopFields = {
   fields: [
     { id: 'advertising_present', type: 'boolean', label: 'Advertising present' },
@@ -141,6 +151,8 @@ export default function UploadPage() {
   const [lngColumn, setLngColumn] = useState('Longitude')
   const [identifierColumn, setIdentifierColumn] = useState('ATCOCode')
   const [uploadResult, setUploadResult] = useState<any>(null)
+  const [uploadJobIdForSpreadsheet, setUploadJobIdForSpreadsheet] = useState<string | null>(null)
+  const [uploadJobStatus, setUploadJobStatus] = useState<UploadJobStatus | null>(null)
   
   // Create type modal
   const [createModalOpen, setCreateModalOpen] = useState(false)
@@ -283,6 +295,8 @@ export default function UploadPage() {
 
     setUploading(true)
     setUploadResult(null)
+    setUploadJobIdForSpreadsheet(null)
+    setUploadJobStatus(null)
 
     try {
       const formData = new FormData()
@@ -293,18 +307,68 @@ export default function UploadPage() {
       formData.append('identifier_column', identifierColumn)
 
       const response = await spreadsheetsApi.uploadSpreadsheet(formData)
-      setUploadResult(response.data)
-      setFile(null)
-      loadData()
+      
+      // Handle async upload response
+      if (response.data.job_id) {
+        setUploadJobIdForSpreadsheet(response.data.job_id)
+        setUploadJobStatus({
+          job_id: response.data.job_id,
+          status: response.data.status || 'pending',
+          stage: 'File uploaded, processing started...',
+          progress_percent: 0,
+          error_message: null,
+          locations_created: null,
+          total_rows: null
+        })
+        // Polling will be handled by useEffect
+      } else {
+        // Legacy sync response (shouldn't happen anymore)
+        setUploadResult(response.data)
+        setFile(null)
+        loadData()
+      }
     } catch (error: any) {
       console.error('Failed to upload:', error)
       const detail = error.response?.data?.detail
       const errorMsg = Array.isArray(detail) ? detail.map((e: any) => e.msg || JSON.stringify(e)).join(', ') : (detail || 'Upload failed')
       alert(errorMsg)
-    } finally {
       setUploading(false)
     }
   }
+  
+  // Poll for upload job status
+  useEffect(() => {
+    if (!uploadJobIdForSpreadsheet) return
+    
+    const pollStatus = async () => {
+      try {
+        const response = await spreadsheetsApi.getUploadJobStatus(uploadJobIdForSpreadsheet)
+        setUploadJobStatus(response.data)
+        
+        if (response.data.status === 'completed') {
+          setUploadResult({
+            locations_created: response.data.locations_created || 0,
+            message: 'Upload completed successfully'
+          })
+          setFile(null)
+          setUploading(false)
+          setUploadJobIdForSpreadsheet(null)
+          loadData()
+        } else if (response.data.status === 'failed') {
+          alert(response.data.error_message || 'Upload processing failed')
+          setUploading(false)
+          setUploadJobIdForSpreadsheet(null)
+        }
+      } catch (error) {
+        console.error('Failed to poll job status:', error)
+      }
+    }
+    
+    const interval = setInterval(pollStatus, 2000)
+    pollStatus() // Initial poll
+    
+    return () => clearInterval(interval)
+  }, [uploadJobIdForSpreadsheet])
 
   const handleAnalyzeShapefile = async (file: File) => {
     setAnalyzingShapefile(true)
@@ -760,11 +824,55 @@ export default function UploadPage() {
                     </button>
                   </form>
 
+                  {/* Upload Progress */}
+                  {uploadJobStatus && uploadJobStatus.status !== 'completed' && (
+                    <div style={{ 
+                      marginTop: '24px', 
+                      background: '#f0f9ff', 
+                      border: '1px solid #3b82f6',
+                      borderRadius: '8px',
+                      padding: '20px'
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', marginBottom: '12px' }}>
+                        <div className="loading-spinner__icon" style={{ 
+                          width: '24px', 
+                          height: '24px', 
+                          marginRight: '12px',
+                          borderWidth: '3px'
+                        }} />
+                        <p className="govuk-body" style={{ margin: 0, fontWeight: 600 }}>
+                          {uploadJobStatus.stage || 'Processing...'}
+                        </p>
+                      </div>
+                      <div className="progress-bar" style={{ height: '12px', marginBottom: '8px' }}>
+                        <div 
+                          className="progress-bar__fill" 
+                          style={{ width: `${uploadJobStatus.progress_percent}%` }}
+                        />
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span className="govuk-body-s" style={{ color: '#6b7280' }}>
+                          {uploadJobStatus.progress_percent}% complete
+                        </span>
+                        {uploadJobStatus.total_rows && (
+                          <span className="govuk-body-s" style={{ color: '#6b7280' }}>
+                            {uploadJobStatus.locations_created?.toLocaleString() || 0} / {uploadJobStatus.total_rows.toLocaleString()} rows
+                          </span>
+                        )}
+                      </div>
+                      {uploadJobStatus.status === 'failed' && uploadJobStatus.error_message && (
+                        <div style={{ marginTop: '12px', color: '#dc2626' }}>
+                          Error: {uploadJobStatus.error_message}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {uploadResult && (
                     <div className="govuk-panel govuk-panel--confirmation" style={{ marginTop: '24px' }}>
                       <h2 className="govuk-panel__title">Upload Complete</h2>
                       <div className="govuk-panel__body">
-                        {uploadResult.locations_created.toLocaleString()} locations created
+                        {(uploadResult.locations_created || 0).toLocaleString()} locations created
                       </div>
                     </div>
                   )}

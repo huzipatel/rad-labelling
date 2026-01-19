@@ -219,6 +219,8 @@ export const spreadsheetsApi = {
     api.post('/spreadsheets/upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     }),
+  getUploadJobStatus: (jobId: string) =>
+    api.get(`/spreadsheets/upload-jobs/${jobId}`),
   enhanceData: (locationTypeId: string, options: any) =>
     api.post('/spreadsheets/enhance', { location_type_id: locationTypeId, ...options }),
   getCouncils: (locationTypeId: string) =>
