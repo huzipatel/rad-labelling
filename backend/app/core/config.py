@@ -40,7 +40,12 @@ class Settings(BaseSettings):
     # Twilio WhatsApp
     TWILIO_ACCOUNT_SID: str = ""
     TWILIO_AUTH_TOKEN: str = ""
-    TWILIO_WHATSAPP_FROM: str = ""  # Twilio WhatsApp sandbox number (e.g., +14155238886)
+    TWILIO_WHATSAPP_NUMBER: str = ""  # Twilio WhatsApp sandbox number (e.g., +14155238886)
+    
+    @property
+    def TWILIO_WHATSAPP_FROM(self) -> str:
+        """Alias for TWILIO_WHATSAPP_NUMBER for backwards compatibility."""
+        return self.TWILIO_WHATSAPP_NUMBER
     
     # Email (SMTP)
     SMTP_HOST: str = ""
