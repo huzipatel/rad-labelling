@@ -42,15 +42,18 @@ class Base(DeclarativeBase):
 database_url = get_async_database_url(settings.DATABASE_URL)
 print(f"[Database] Connecting to: {database_url.split('@')[1] if '@' in database_url else 'configured database'}")
 
-# Create async engine
+# Create async engine for web server
 engine = create_async_engine(
     database_url,
     echo=settings.DEBUG,
     pool_size=settings.DATABASE_POOL_SIZE,
     max_overflow=settings.DATABASE_MAX_OVERFLOW,
+    pool_timeout=30,
+    pool_recycle=1800,  # Recycle connections after 30 minutes
+    pool_pre_ping=True,  # Check connection health before use
 )
 
-# Create async session factory
+# Create async session factory for web server
 async_session_maker = async_sessionmaker(
     engine,
     class_=AsyncSession,
@@ -58,6 +61,35 @@ async_session_maker = async_sessionmaker(
     autocommit=False,
     autoflush=False,
 )
+
+
+def get_celery_engine():
+    """Create a separate engine for Celery workers to avoid pool conflicts."""
+    return create_async_engine(
+        database_url,
+        echo=False,
+        pool_size=2,  # Smaller pool for worker
+        max_overflow=3,
+        pool_timeout=60,  # Longer timeout for workers
+        pool_recycle=600,  # Recycle more frequently
+        pool_pre_ping=True,
+        connect_args={
+            "timeout": 60,  # Connection timeout
+            "command_timeout": 300,  # Query timeout (5 min)
+        }
+    )
+
+
+def get_celery_session_maker():
+    """Create a session maker for Celery workers."""
+    celery_engine = get_celery_engine()
+    return async_sessionmaker(
+        celery_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autocommit=False,
+        autoflush=False,
+    )
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:

@@ -35,7 +35,7 @@ def run_async(coro):
         loop.close()
 
 
-@celery_app.task(bind=True, name="download_task_images")
+@celery_app.task(bind=True, name="download_task_images", max_retries=3)
 def download_task_images_celery(self, task_id: str, download_log_id: str = None):
     """
     Download Google Street View images for all locations in a task.
@@ -43,7 +43,7 @@ def download_task_images_celery(self, task_id: str, download_log_id: str = None)
     This is a long-running task that updates progress as it goes.
     Handles download logs, progress tracking, and error recovery.
     """
-    from app.core.database import async_session_maker
+    from app.core.database import get_celery_session_maker
     from app.models.task import Task
     from app.models.location import Location
     from app.models.gsv_image import GSVImage
@@ -57,7 +57,8 @@ def download_task_images_celery(self, task_id: str, download_log_id: str = None)
     async def _download():
         print(f"[Celery GSV Download] Starting download for task {task_id}")
         
-        async with async_session_maker() as db:
+        session_maker = get_celery_session_maker()
+        async with session_maker() as db:
             # Get task with location type
             result = await db.execute(
                 select(Task).options(selectinload(Task.location_type)).where(Task.id == UUID(task_id))
@@ -240,18 +241,19 @@ def download_task_images_celery(self, task_id: str, download_log_id: str = None)
     return run_async(_download())
 
 
-@celery_app.task(bind=True, name="enhance_locations")
+@celery_app.task(bind=True, name="enhance_locations", max_retries=3)
 def enhance_locations(self, location_type_id: str):
     """
     Enhance all locations of a type with spatial data.
     """
-    from app.core.database import async_session_maker
+    from app.core.database import get_celery_session_maker
     from app.models.location import Location
     from app.services.spatial_enhancer import SpatialEnhancer
     from sqlalchemy import select
     
     async def _enhance():
-        async with async_session_maker() as db:
+        session_maker = get_celery_session_maker()
+        async with session_maker() as db:
             # Get unenhanced locations
             result = await db.execute(
                 select(Location).where(
@@ -307,7 +309,7 @@ def enhance_locations(self, location_type_id: str):
     return run_async(_enhance())
 
 
-@celery_app.task(bind=True, name="process_spreadsheet_upload")
+@celery_app.task(bind=True, name="process_spreadsheet_upload", max_retries=3)
 def process_spreadsheet_upload(self, job_id: str):
     """
     Process a spreadsheet upload in the background.
@@ -315,7 +317,7 @@ def process_spreadsheet_upload(self, job_id: str):
     This handles large CSV/Excel files with hundreds of thousands of rows.
     Uses chunked reading for memory efficiency and speed.
     """
-    from app.core.database import async_session_maker
+    from app.core.database import get_celery_session_maker
     from app.models.shapefile import UploadJob
     from app.models.location import Location, LocationType
     from sqlalchemy import select
@@ -323,8 +325,13 @@ def process_spreadsheet_upload(self, job_id: str):
     import os
     import pandas as pd
     
+    print(f"[Celery] Task started for job {job_id}")
+    
     async def _process():
-        async with async_session_maker() as db:
+        # Create a fresh session maker for this task
+        session_maker = get_celery_session_maker()
+        
+        async with session_maker() as db:
             # Get the upload job
             result = await db.execute(
                 select(UploadJob).where(UploadJob.id == UUID(job_id))
@@ -565,29 +572,44 @@ def process_spreadsheet_upload(self, job_id: str):
                 error_msg = f"{str(e)}\n{traceback.format_exc()}"
                 print(f"[Celery] ERROR: {error_msg}")
                 
-                job.status = "failed"
-                job.stage = "Upload failed"
-                job.error_message = str(e)
-                await db.commit()
+                try:
+                    job.status = "failed"
+                    job.stage = "Upload failed"
+                    job.error_message = str(e)[:500]  # Limit error message length
+                    await db.commit()
+                except:
+                    pass  # If we can't update the job, just log it
                 
                 return {"error": str(e)}
     
-    return run_async(_process())
+    try:
+        return run_async(_process())
+    except Exception as e:
+        import traceback
+        print(f"[Celery] FATAL ERROR in task: {e}\n{traceback.format_exc()}")
+        
+        # Check if it's a connection error - if so, retry
+        if "timeout" in str(e).lower() or "connection" in str(e).lower():
+            print(f"[Celery] Retrying due to connection error...")
+            raise self.retry(exc=e, countdown=30)  # Retry after 30 seconds
+        
+        raise
 
 
-@celery_app.task(name="notify_task_completion")
+@celery_app.task(name="notify_task_completion", max_retries=3)
 def notify_task_completion(task_id: str):
     """
     Send WhatsApp notification when a task is completed.
     """
-    from app.core.database import async_session_maker
+    from app.core.database import get_celery_session_maker
     from app.models.task import Task
     from app.models.user import User
     from app.services.whatsapp_notifier import WhatsAppNotifier
     from sqlalchemy import select
     
     async def _notify():
-        async with async_session_maker() as db:
+        session_maker = get_celery_session_maker()
+        async with session_maker() as db:
             # Get task
             result = await db.execute(
                 select(Task).where(Task.id == UUID(task_id))
