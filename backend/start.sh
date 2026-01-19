@@ -3,6 +3,10 @@
 echo "=== Starting Application ==="
 echo "Redis URL: ${REDIS_URL:-redis://localhost:6379/0}"
 
+# Run database migrations
+echo "Running database migrations..."
+alembic upgrade head || echo "Migration warning (may already be applied)"
+
 # Start Celery worker in background
 echo "Starting Celery worker..."
 celery -A app.tasks.celery_tasks worker --loglevel=info --concurrency=2 &
