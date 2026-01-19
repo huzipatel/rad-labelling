@@ -80,17 +80,6 @@ class Invitation(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     accepted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     
-    # Relationships
-    assigned_tasks: Mapped[List["Task"]] = relationship(
-        "Task",
-        back_populates="assignee",
-        foreign_keys="Task.assigned_to"
-    )
-    labels: Mapped[List["Label"]] = relationship(
-        "Label",
-        back_populates="labeller"
-    )
-    
     def __repr__(self) -> str:
-        return f"<User {self.email}>"
+        return f"<Invitation {self.email}>"
 
