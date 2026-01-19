@@ -286,9 +286,9 @@ export default function DataViewerPage() {
           No datasets found. Upload a spreadsheet first to view data.
         </div>
       ) : (
-        <div className="govuk-grid-row">
+        <div className="govuk-grid-row" style={{ overflow: 'hidden' }}>
           {/* Dataset Selection Sidebar */}
-          <div className="govuk-grid-column-one-quarter">
+          <div className="govuk-grid-column-one-quarter" style={{ flexShrink: 0 }}>
             <div style={{ 
               background: 'white', 
               borderRadius: '12px', 
@@ -328,7 +328,7 @@ export default function DataViewerPage() {
           </div>
 
           {/* Data Table */}
-          <div className="govuk-grid-column-three-quarters">
+          <div className="govuk-grid-column-three-quarters" style={{ minWidth: 0, overflow: 'hidden' }}>
             {selectedDataset && (
               <>
                 {/* Dataset Stats */}
@@ -414,9 +414,12 @@ export default function DataViewerPage() {
                     borderRadius: '12px',
                     padding: '20px',
                     marginBottom: '20px',
-                    border: '1px solid #e5e7eb'
+                    border: '1px solid #e5e7eb',
+                    overflow: 'hidden',
+                    maxWidth: '100%',
+                    boxSizing: 'border-box'
                   }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '8px' }}>
                       <h3 className="govuk-heading-s" style={{ margin: 0 }}>Select Columns to Display</h3>
                       <div style={{ display: 'flex', gap: '8px' }}>
                         <button
@@ -454,12 +457,17 @@ export default function DataViewerPage() {
                           <p className="govuk-body-s" style={{ fontWeight: 600, color: '#6b7280', marginBottom: '8px' }}>
                             {sourceLabels[source]}
                           </p>
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                          <div style={{ 
+                            display: 'flex', 
+                            flexWrap: 'wrap', 
+                            gap: '8px',
+                            maxWidth: '100%'
+                          }}>
                             {sourceCols.map(col => (
                               <label
                                 key={col.key}
                                 style={{
-                                  display: 'flex',
+                                  display: 'inline-flex',
                                   alignItems: 'center',
                                   gap: '6px',
                                   padding: '8px 12px',
@@ -468,16 +476,22 @@ export default function DataViewerPage() {
                                   borderRadius: '6px',
                                   cursor: 'pointer',
                                   fontSize: '14px',
-                                  transition: 'all 0.15s ease'
+                                  transition: 'all 0.15s ease',
+                                  maxWidth: '200px',
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap',
+                                  flexShrink: 0
                                 }}
+                                title={col.label}
                               >
                                 <input
                                   type="checkbox"
                                   checked={visibleColumns.includes(col.key)}
                                   onChange={() => toggleColumn(col.key)}
-                                  style={{ width: '16px', height: '16px' }}
+                                  style={{ width: '16px', height: '16px', flexShrink: 0 }}
                                 />
-                                {col.label}
+                                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{col.label}</span>
                               </label>
                             ))}
                           </div>
