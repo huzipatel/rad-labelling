@@ -51,6 +51,17 @@ class User(Base):
         server_default=func.now(),
         onupdate=func.now()
     )
+    
+    # Relationships
+    assigned_tasks: Mapped[List["Task"]] = relationship(
+        "Task",
+        back_populates="assignee",
+        foreign_keys="Task.assigned_to"
+    )
+    labels: Mapped[List["Label"]] = relationship(
+        "Label",
+        back_populates="labeller"
+    )
 
 
 class Invitation(Base):
