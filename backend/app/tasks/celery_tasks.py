@@ -313,14 +313,15 @@ def process_spreadsheet_upload(self, job_id: str):
     Process a spreadsheet upload in the background.
     
     This handles large CSV/Excel files with hundreds of thousands of rows.
+    Uses chunked reading for memory efficiency and speed.
     """
     from app.core.database import async_session_maker
     from app.models.shapefile import UploadJob
     from app.models.location import Location, LocationType
-    from app.services.spreadsheet_parser import SpreadsheetParser
     from sqlalchemy import select
     from datetime import datetime
     import os
+    import pandas as pd
     
     async def _process():
         async with async_session_maker() as db:
@@ -336,8 +337,11 @@ def process_spreadsheet_upload(self, job_id: str):
             try:
                 # Update status
                 job.status = "processing"
-                job.stage = "Reading spreadsheet file"
+                job.stage = "Starting file processing"
+                job.progress_percent = 1
                 await db.commit()
+                
+                print(f"[Celery] Starting spreadsheet processing for job {job_id}")
                 
                 # Get job metadata
                 metadata = job.job_metadata
@@ -360,73 +364,175 @@ def process_spreadsheet_upload(self, job_id: str):
                 if not file_path or not os.path.exists(file_path):
                     raise Exception(f"File not found: {file_path}")
                 
-                with open(file_path, "rb") as f:
-                    contents = f.read()
+                ext = file_path.split(".")[-1].lower()
                 
-                job.stage = "Parsing spreadsheet data"
+                job.stage = "Counting rows..."
+                job.progress_percent = 2
                 await db.commit()
                 
-                # Update Celery state
-                self.update_state(
-                    state="PROGRESS",
-                    meta={"stage": "Parsing spreadsheet", "percent": 10}
-                )
-                
-                parser = SpreadsheetParser()
-                locations_data = parser.parse(
-                    contents,
-                    os.path.basename(file_path),
-                    lat_column=lat_column,
-                    lng_column=lng_column,
-                    identifier_column=identifier_column
-                )
-                
-                total_rows = len(locations_data)
-                job.stage = f"Creating {total_rows:,} location records"
-                job.job_metadata = {**metadata, "total_rows": total_rows}
-                await db.commit()
-                
-                self.update_state(
-                    state="PROGRESS",
-                    meta={"stage": "Creating locations", "percent": 20, "total": total_rows}
-                )
-                
-                # Create location records in batches
-                locations_created = 0
-                batch_size = 1000
-                
-                for i in range(0, total_rows, batch_size):
-                    batch = locations_data[i:i + batch_size]
+                # For CSV, count rows first (fast)
+                if ext == "csv":
+                    # Count total rows quickly
+                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        total_rows = sum(1 for _ in f) - 1  # Subtract header
                     
-                    for loc_data in batch:
-                        location = Location(
-                            location_type_id=location_type.id,
-                            identifier=loc_data["identifier"],
-                            latitude=loc_data["latitude"],
-                            longitude=loc_data["longitude"],
-                            original_data=loc_data["original_data"]
-                        )
-                        db.add(location)
-                        locations_created += 1
+                    print(f"[Celery] CSV has {total_rows:,} rows")
                     
-                    # Commit batch
-                    await db.commit()
-                    
-                    # Update progress
-                    percent = 20 + int((locations_created / total_rows) * 75)
-                    job.stage = f"Created {locations_created:,} of {total_rows:,} locations"
-                    job.progress_percent = percent
+                    job.stage = f"Processing {total_rows:,} rows..."
+                    job.progress_percent = 5
+                    job.job_metadata = {**metadata, "total_rows": total_rows}
                     await db.commit()
                     
                     self.update_state(
                         state="PROGRESS",
-                        meta={
-                            "stage": f"Creating locations ({locations_created:,}/{total_rows:,})",
-                            "percent": percent,
-                            "current": locations_created,
-                            "total": total_rows
-                        }
+                        meta={"stage": "Processing CSV", "percent": 5, "total": total_rows}
                     )
+                    
+                    # Process CSV in chunks using pandas
+                    locations_created = 0
+                    chunk_size = 10000  # Process 10k rows at a time
+                    
+                    for chunk_num, chunk_df in enumerate(pd.read_csv(file_path, chunksize=chunk_size)):
+                        # Strip column names
+                        chunk_df.columns = chunk_df.columns.str.strip()
+                        
+                        # Case-insensitive column matching
+                        column_map = {col.lower(): col for col in chunk_df.columns}
+                        actual_lat = column_map.get(lat_column.lower(), lat_column)
+                        actual_lng = column_map.get(lng_column.lower(), lng_column)
+                        actual_id = column_map.get(identifier_column.lower(), identifier_column)
+                        
+                        # Filter valid rows using vectorized operations (FAST)
+                        valid_mask = (
+                            chunk_df[actual_lat].notna() &
+                            chunk_df[actual_lng].notna() &
+                            chunk_df[actual_id].notna() &
+                            (chunk_df[actual_lat].astype(float) >= -90) &
+                            (chunk_df[actual_lat].astype(float) <= 90) &
+                            (chunk_df[actual_lng].astype(float) >= -180) &
+                            (chunk_df[actual_lng].astype(float) <= 180)
+                        )
+                        valid_df = chunk_df[valid_mask]
+                        
+                        # Batch insert using bulk operations
+                        locations_batch = []
+                        for _, row in valid_df.iterrows():
+                            original_data = {}
+                            for key, value in row.items():
+                                if pd.isna(value):
+                                    original_data[key] = None
+                                elif hasattr(value, 'isoformat'):
+                                    original_data[key] = value.isoformat()
+                                else:
+                                    original_data[key] = value
+                            
+                            locations_batch.append(Location(
+                                location_type_id=location_type.id,
+                                identifier=str(row[actual_id]).strip(),
+                                latitude=float(row[actual_lat]),
+                                longitude=float(row[actual_lng]),
+                                original_data=original_data
+                            ))
+                        
+                        # Bulk add all locations in this chunk
+                        db.add_all(locations_batch)
+                        await db.commit()
+                        
+                        locations_created += len(locations_batch)
+                        
+                        # Update progress
+                        percent = 5 + int((locations_created / total_rows) * 90)
+                        job.stage = f"Created {locations_created:,} of {total_rows:,} locations"
+                        job.progress_percent = percent
+                        await db.commit()
+                        
+                        self.update_state(
+                            state="PROGRESS",
+                            meta={
+                                "stage": f"Creating locations ({locations_created:,}/{total_rows:,})",
+                                "percent": percent,
+                                "current": locations_created,
+                                "total": total_rows
+                            }
+                        )
+                        
+                        print(f"[Celery] Processed chunk {chunk_num + 1}, {locations_created:,} locations created ({percent}%)")
+                
+                else:
+                    # Excel files - read all at once (can't chunk easily)
+                    job.stage = "Reading Excel file..."
+                    job.progress_percent = 5
+                    await db.commit()
+                    
+                    df = pd.read_excel(file_path)
+                    total_rows = len(df)
+                    
+                    job.stage = f"Processing {total_rows:,} rows from Excel..."
+                    job.progress_percent = 20
+                    job.job_metadata = {**metadata, "total_rows": total_rows}
+                    await db.commit()
+                    
+                    # Process in memory batches
+                    df.columns = df.columns.str.strip()
+                    column_map = {col.lower(): col for col in df.columns}
+                    actual_lat = column_map.get(lat_column.lower(), lat_column)
+                    actual_lng = column_map.get(lng_column.lower(), lng_column)
+                    actual_id = column_map.get(identifier_column.lower(), identifier_column)
+                    
+                    locations_created = 0
+                    batch_size = 5000
+                    
+                    for start_idx in range(0, total_rows, batch_size):
+                        end_idx = min(start_idx + batch_size, total_rows)
+                        batch_df = df.iloc[start_idx:end_idx]
+                        
+                        locations_batch = []
+                        for _, row in batch_df.iterrows():
+                            try:
+                                lat = float(row[actual_lat])
+                                lng = float(row[actual_lng])
+                                identifier = str(row[actual_id]).strip()
+                                
+                                if not identifier or not (-90 <= lat <= 90) or not (-180 <= lng <= 180):
+                                    continue
+                                
+                                original_data = {}
+                                for key, value in row.items():
+                                    if pd.isna(value):
+                                        original_data[key] = None
+                                    elif hasattr(value, 'isoformat'):
+                                        original_data[key] = value.isoformat()
+                                    else:
+                                        original_data[key] = value
+                                
+                                locations_batch.append(Location(
+                                    location_type_id=location_type.id,
+                                    identifier=identifier,
+                                    latitude=lat,
+                                    longitude=lng,
+                                    original_data=original_data
+                                ))
+                            except:
+                                continue
+                        
+                        db.add_all(locations_batch)
+                        await db.commit()
+                        
+                        locations_created += len(locations_batch)
+                        percent = 20 + int((locations_created / total_rows) * 75)
+                        job.stage = f"Created {locations_created:,} of {total_rows:,} locations"
+                        job.progress_percent = percent
+                        await db.commit()
+                        
+                        self.update_state(
+                            state="PROGRESS",
+                            meta={
+                                "stage": f"Creating locations ({locations_created:,}/{total_rows:,})",
+                                "percent": percent,
+                                "current": locations_created,
+                                "total": total_rows
+                            }
+                        )
                 
                 # Mark as completed
                 job.status = "completed"
@@ -446,6 +552,8 @@ def process_spreadsheet_upload(self, job_id: str):
                 except:
                     pass
                 
+                print(f"[Celery] Completed! Created {locations_created:,} locations")
+                
                 return {
                     "job_id": job_id,
                     "locations_created": locations_created,
@@ -453,6 +561,10 @@ def process_spreadsheet_upload(self, job_id: str):
                 }
                 
             except Exception as e:
+                import traceback
+                error_msg = f"{str(e)}\n{traceback.format_exc()}"
+                print(f"[Celery] ERROR: {error_msg}")
+                
                 job.status = "failed"
                 job.stage = "Upload failed"
                 job.error_message = str(e)
