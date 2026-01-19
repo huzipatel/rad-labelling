@@ -1,5 +1,5 @@
 """Database models."""
-from app.models.user import User
+from app.models.user import User, Invitation
 from app.models.location import Location, LocationType
 from app.models.task import Task
 from app.models.label import Label
@@ -10,6 +10,7 @@ from app.models.download_log import DownloadLog
 
 __all__ = [
     "User",
+    "Invitation",
     "Location",
     "LocationType",
     "Task",
