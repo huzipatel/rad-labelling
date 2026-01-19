@@ -301,57 +301,20 @@ async def upload_spreadsheet(
     await db.commit()
     await db.refresh(job)
     
-    # Queue background task
+    # Queue background task via Celery
+    celery_queued = False
     try:
         from app.tasks.celery_tasks import process_spreadsheet_upload
         process_spreadsheet_upload.delay(str(job.id))
-    except Exception as e:
-        # If Celery isn't available, process synchronously (fallback)
-        print(f"Warning: Celery not available, processing synchronously: {e}")
-        job.status = "processing"
-        job.stage = "Processing (sync mode)"
+        celery_queued = True
+        job.stage = "Queued for background processing"
         await db.commit()
-        
-        # Fallback to sync processing for small files
-        parser = SpreadsheetParser()
-        try:
-            locations_data = parser.parse(
-                contents,
-                file.filename or "upload.csv",
-                lat_column=lat_column,
-                lng_column=lng_column,
-                identifier_column=identifier_column
-            )
-            
-            locations_created = 0
-            for loc_data in locations_data:
-                location = Location(
-                    location_type_id=location_type.id,
-                    identifier=loc_data["identifier"],
-                    latitude=loc_data["latitude"],
-                    longitude=loc_data["longitude"],
-                    original_data=loc_data["original_data"]
-                )
-                db.add(location)
-                locations_created += 1
-            
-            await db.commit()
-            
-            job.status = "completed"
-            job.stage = f"Created {locations_created} locations"
-            job.progress_percent = 100
-            job.completed_at = datetime.utcnow()
-            job.job_metadata = {**job.job_metadata, "locations_created": locations_created}
-            await db.commit()
-            
-        except Exception as parse_error:
-            job.status = "failed"
-            job.error_message = str(parse_error)
-            await db.commit()
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Error processing spreadsheet: {str(parse_error)}"
-            )
+    except Exception as e:
+        # Celery not available - file is saved, can be processed later
+        print(f"Warning: Celery not available: {e}")
+        job.status = "pending"
+        job.stage = "File saved - waiting for worker (set up Celery to process)"
+        await db.commit()
     
     return AsyncUploadResponse(
         message="File uploaded successfully. Processing in background.",
@@ -415,6 +378,60 @@ async def list_upload_jobs(
         )
         for job in jobs
     ]
+
+
+@router.post("/upload-jobs/{job_id}/retry")
+async def retry_upload_job(
+    job_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_manager)
+):
+    """Retry processing a pending or failed upload job."""
+    result = await db.execute(
+        select(UploadJob).where(UploadJob.id == job_id)
+    )
+    job = result.scalar_one_or_none()
+    
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Upload job not found"
+        )
+    
+    if job.status not in ["pending", "failed"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot retry job with status '{job.status}'. Only pending or failed jobs can be retried."
+        )
+    
+    # Check if file still exists
+    if not job.file_path or not os.path.exists(job.file_path):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Upload file no longer exists. Please upload again."
+        )
+    
+    # Reset job status
+    job.status = "pending"
+    job.stage = "Retrying - queued for processing"
+    job.progress_percent = 0
+    job.error_message = None
+    await db.commit()
+    
+    # Queue for Celery processing
+    try:
+        from app.tasks.celery_tasks import process_spreadsheet_upload
+        process_spreadsheet_upload.delay(str(job.id))
+        job.stage = "Queued for background processing"
+        await db.commit()
+        return {"message": "Job queued for processing", "job_id": str(job.id)}
+    except Exception as e:
+        job.stage = f"Celery unavailable: {str(e)}"
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Background worker not available. Please set up Celery worker."
+        )
 
 
 @router.post("/enhance", response_model=EnhanceResponse)
