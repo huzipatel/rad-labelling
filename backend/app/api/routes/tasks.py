@@ -1849,3 +1849,206 @@ async def download_task_images(task_id: str, download_log_id: str = None):
                 download_log.completed_at = datetime.utcnow()
                 await db.commit()
 
+
+class CreateSampleTaskRequest(BaseModel):
+    """Request to create a sample task."""
+    source_task_id: str
+    sample_size: int  # Number of locations to include
+    sample_name: Optional[str] = None
+
+
+class SampleTaskResponse(BaseModel):
+    """Response for sample task creation."""
+    task_id: str
+    name: str
+    sample_size: int
+    source_task_name: str
+    message: str
+
+
+@router.post("/sample", response_model=SampleTaskResponse)
+async def create_sample_task(
+    request: CreateSampleTaskRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_manager)
+):
+    """
+    Create a sample task from an existing task with downloaded images.
+    
+    This creates a new task with a random subset of locations from the source task.
+    Useful for creating training/demo datasets.
+    """
+    import random
+    from app.models.gsv_image import GSVImage
+    
+    # Get source task
+    source_result = await db.execute(
+        select(Task)
+        .options(selectinload(Task.location_type))
+        .where(Task.id == uuid.UUID(request.source_task_id))
+    )
+    source_task = source_result.scalar_one_or_none()
+    
+    if not source_task:
+        raise HTTPException(status_code=404, detail="Source task not found")
+    
+    # Check if source task has downloaded images
+    if source_task.images_downloaded == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Source task has no downloaded images. Please download images first."
+        )
+    
+    # Get locations for the source task that have images
+    if source_task.is_sample and source_task.sample_location_ids:
+        # Source is also a sample task - get those specific locations
+        location_query = (
+            select(Location.id)
+            .where(Location.id.in_([uuid.UUID(lid) for lid in source_task.sample_location_ids]))
+        )
+    else:
+        # Regular task - get locations by group field
+        if source_task.group_field and source_task.group_value:
+            if source_task.group_field == "council":
+                location_query = (
+                    select(Location.id)
+                    .where(
+                        Location.location_type_id == source_task.location_type_id,
+                        Location.council == source_task.group_value
+                    )
+                )
+            elif source_task.group_field == "combined_authority":
+                location_query = (
+                    select(Location.id)
+                    .where(
+                        Location.location_type_id == source_task.location_type_id,
+                        Location.combined_authority == source_task.group_value
+                    )
+                )
+            else:
+                # Fall back to council field
+                location_query = (
+                    select(Location.id)
+                    .where(
+                        Location.location_type_id == source_task.location_type_id,
+                        Location.council == source_task.council
+                    )
+                )
+        else:
+            location_query = (
+                select(Location.id)
+                .where(
+                    Location.location_type_id == source_task.location_type_id,
+                    Location.council == source_task.council
+                )
+            )
+    
+    # Filter to only locations with images
+    location_query = (
+        location_query
+        .where(
+            Location.id.in_(
+                select(GSVImage.location_id).distinct()
+            )
+        )
+    )
+    
+    result = await db.execute(location_query)
+    location_ids = [str(row[0]) for row in result.fetchall()]
+    
+    if len(location_ids) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="No locations with images found in source task"
+        )
+    
+    # Validate sample size
+    if request.sample_size <= 0:
+        raise HTTPException(status_code=400, detail="Sample size must be positive")
+    
+    if request.sample_size > len(location_ids):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Sample size ({request.sample_size}) exceeds available locations with images ({len(location_ids)})"
+        )
+    
+    # Random sample
+    sampled_ids = random.sample(location_ids, request.sample_size)
+    
+    # Create sample task name
+    source_name = source_task.name or source_task.group_value or source_task.council
+    sample_name = request.sample_name or f"Sample: {source_name} ({request.sample_size} locations)"
+    
+    # Create the sample task
+    sample_task = Task(
+        location_type_id=source_task.location_type_id,
+        council=source_task.council,
+        group_field=source_task.group_field,
+        group_value=source_task.group_value,
+        name=sample_name,
+        status="ready",  # Sample tasks are immediately ready
+        total_locations=request.sample_size,
+        images_downloaded=request.sample_size * 5,  # Assume 5 images per location
+        total_images=request.sample_size * 5,
+        is_sample=True,
+        source_task_id=source_task.id,
+        sample_location_ids=sampled_ids
+    )
+    
+    db.add(sample_task)
+    await db.commit()
+    await db.refresh(sample_task)
+    
+    return SampleTaskResponse(
+        task_id=str(sample_task.id),
+        name=sample_name,
+        sample_size=request.sample_size,
+        source_task_name=source_name,
+        message=f"Created sample task with {request.sample_size} locations from '{source_name}'"
+    )
+
+
+@router.get("/with-images", response_model=List[TaskResponse])
+async def get_tasks_with_images(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_manager)
+):
+    """Get all tasks that have downloaded images (for sample task creation)."""
+    result = await db.execute(
+        select(Task)
+        .options(
+            selectinload(Task.location_type),
+            selectinload(Task.assignee)
+        )
+        .where(Task.images_downloaded > 0)
+        .order_by(Task.created_at.desc())
+    )
+    tasks = result.scalars().all()
+    
+    return [
+        TaskResponse(
+            id=str(t.id),
+            location_type_id=str(t.location_type_id),
+            location_type_name=t.location_type.display_name if t.location_type else "Unknown",
+            council=t.council,
+            group_field=t.group_field,
+            group_value=t.group_value,
+            name=t.name,
+            assigned_to=str(t.assigned_to) if t.assigned_to else None,
+            assignee_name=t.assignee.name if t.assignee else None,
+            status=t.status,
+            total_locations=t.total_locations,
+            completed_locations=t.completed_locations,
+            failed_locations=t.failed_locations,
+            images_downloaded=t.images_downloaded,
+            total_images=t.total_images,
+            completion_percentage=t.completion_percentage,
+            download_progress=t.download_progress,
+            created_at=t.created_at,
+            assigned_at=t.assigned_at,
+            started_at=t.started_at,
+            completed_at=t.completed_at
+        )
+        for t in tasks
+    ]
+

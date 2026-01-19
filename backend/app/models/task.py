@@ -2,9 +2,9 @@
 import uuid
 from datetime import datetime
 from typing import Optional, List
-from sqlalchemy import String, DateTime, Integer, ForeignKey, func, Index, Text
+from sqlalchemy import String, DateTime, Integer, ForeignKey, func, Index, Text, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 
 from app.core.database import Base
 
@@ -77,6 +77,23 @@ class Task(Base):
     completed_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True),
         nullable=True
+    )
+    
+    # Sample task fields
+    is_sample: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False
+    )
+    source_task_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("tasks.id", ondelete="SET NULL"),
+        nullable=True
+    )
+    sample_location_ids: Mapped[Optional[List]] = mapped_column(
+        JSONB,
+        nullable=True,
+        default=None
     )
     
     # Relationships

@@ -147,6 +147,15 @@ export default function ManagerDashboard() {
   const [loadingFilterFields, setLoadingFilterFields] = useState(false)
   const [loadingFilterPreview, setLoadingFilterPreview] = useState(false)
   const [applyingFilter, setApplyingFilter] = useState(false)
+  
+  // Sample task state
+  const [sampleModalOpen, setSampleModalOpen] = useState(false)
+  const [tasksWithImages, setTasksWithImages] = useState<Task[]>([])
+  const [selectedSourceTask, setSelectedSourceTask] = useState('')
+  const [sampleSize, setSampleSize] = useState(10)
+  const [sampleName, setSampleName] = useState('')
+  const [loadingTasksWithImages, setLoadingTasksWithImages] = useState(false)
+  const [creatingSample, setCreatingSample] = useState(false)
 
   useEffect(() => {
     loadData()
@@ -435,6 +444,50 @@ export default function ManagerDashboard() {
       alert(error.response?.data?.detail || 'Failed to apply filter')
     } finally {
       setApplyingFilter(false)
+    }
+  }
+
+  // Sample task handlers
+  const handleOpenSampleModal = async () => {
+    setSampleModalOpen(true)
+    setSelectedSourceTask('')
+    setSampleSize(10)
+    setSampleName('')
+    setLoadingTasksWithImages(true)
+    
+    try {
+      const response = await tasksApi.getTasksWithImages()
+      setTasksWithImages(response.data)
+    } catch (error) {
+      console.error('Failed to load tasks with images:', error)
+      alert('Failed to load tasks with images')
+    } finally {
+      setLoadingTasksWithImages(false)
+    }
+  }
+
+  const handleCreateSampleTask = async () => {
+    if (!selectedSourceTask || sampleSize <= 0) return
+    
+    setCreatingSample(true)
+    try {
+      const response = await tasksApi.createSampleTask({
+        source_task_id: selectedSourceTask,
+        sample_size: sampleSize,
+        sample_name: sampleName || undefined
+      })
+      alert(response.data.message)
+      setSampleModalOpen(false)
+      loadData()
+    } catch (error: any) {
+      console.error('Failed to create sample task:', error)
+      const detail = error.response?.data?.detail
+      const errorMsg = Array.isArray(detail) 
+        ? detail.map((e: any) => e.msg || JSON.stringify(e)).join(', ') 
+        : (detail || 'Failed to create sample task')
+      alert(errorMsg)
+    } finally {
+      setCreatingSample(false)
     }
   }
 
@@ -785,6 +838,12 @@ export default function ManagerDashboard() {
               onClick={handleOpenCreateModal}
             >
               + Create Tasks
+            </button>
+            <button 
+              className="govuk-button govuk-button--secondary govuk-!-margin-right-2"
+              onClick={handleOpenSampleModal}
+            >
+              🎲 Create Sample Task
             </button>
             <button 
               className="govuk-button govuk-button--secondary govuk-!-margin-right-2"
@@ -1886,6 +1945,96 @@ export default function ManagerDashboard() {
                 </div>
               </>
             )}
+          </>
+        )}
+      </Modal>
+
+      {/* Sample Task Modal */}
+      <Modal
+        isOpen={sampleModalOpen}
+        onClose={() => setSampleModalOpen(false)}
+        title="Create Sample Task"
+      >
+        <p className="govuk-body">
+          Create a smaller sample task from an existing task that has downloaded images.
+          This is useful for creating training or demo datasets.
+        </p>
+
+        {loadingTasksWithImages ? (
+          <Loading />
+        ) : tasksWithImages.length === 0 ? (
+          <div className="govuk-inset-text">
+            No tasks with downloaded images found. Please download images for a task first.
+          </div>
+        ) : (
+          <>
+            <div className="govuk-form-group">
+              <label className="govuk-label" htmlFor="sourceTask">
+                Source Task
+              </label>
+              <p className="govuk-hint">Select the task to create a sample from</p>
+              <select
+                className="govuk-select"
+                id="sourceTask"
+                value={selectedSourceTask}
+                onChange={(e) => setSelectedSourceTask(e.target.value)}
+                style={{ width: '100%' }}
+              >
+                <option value="">-- Select a task --</option>
+                {tasksWithImages.map((task) => (
+                  <option key={task.id} value={task.id}>
+                    {task.name || task.group_value || task.council} ({task.images_downloaded} images)
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="govuk-form-group">
+              <label className="govuk-label" htmlFor="sampleSize">
+                Sample Size
+              </label>
+              <p className="govuk-hint">Number of locations to include in the sample</p>
+              <input
+                className="govuk-input"
+                id="sampleSize"
+                type="number"
+                min="1"
+                value={sampleSize}
+                onChange={(e) => setSampleSize(parseInt(e.target.value) || 0)}
+                style={{ maxWidth: '150px' }}
+              />
+            </div>
+
+            <div className="govuk-form-group">
+              <label className="govuk-label" htmlFor="sampleName">
+                Sample Name (optional)
+              </label>
+              <p className="govuk-hint">A custom name for the sample task</p>
+              <input
+                className="govuk-input"
+                id="sampleName"
+                type="text"
+                value={sampleName}
+                onChange={(e) => setSampleName(e.target.value)}
+                placeholder="e.g., Training Sample - Manchester"
+              />
+            </div>
+
+            <div className="govuk-button-group">
+              <button
+                className="govuk-button"
+                onClick={handleCreateSampleTask}
+                disabled={creatingSample || !selectedSourceTask || sampleSize <= 0}
+              >
+                {creatingSample ? 'Creating...' : 'Create Sample Task'}
+              </button>
+              <button
+                className="govuk-button govuk-button--secondary"
+                onClick={() => setSampleModalOpen(false)}
+              >
+                Cancel
+              </button>
+            </div>
           </>
         )}
       </Modal>

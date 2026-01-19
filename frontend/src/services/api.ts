@@ -137,6 +137,16 @@ export const tasksApi = {
     api.get(`/tasks/${taskId}/images`, { params: { page, page_size: pageSize } }),
   getDownloadLogs: (taskId: string) =>
     api.get(`/tasks/${taskId}/download-logs`),
+  
+  // Sample tasks
+  getTasksWithImages: () =>
+    api.get('/tasks/with-images'),
+  createSampleTask: (data: {
+    source_task_id: string;
+    sample_size: number;
+    sample_name?: string;
+  }) =>
+    api.post('/tasks/sample', data),
 }
 
 // Export API
