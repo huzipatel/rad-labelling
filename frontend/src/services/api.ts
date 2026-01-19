@@ -253,6 +253,22 @@ export const usersApi = {
     api.delete(`/users/${userId}`),
 }
 
+// Invitations API
+export const invitationsApi = {
+  create: (data: { email: string; name?: string; role: string; message?: string }) =>
+    api.post('/invitations/', data),
+  list: (status?: string) =>
+    api.get('/invitations/', { params: status ? { status_filter: status } : {} }),
+  validate: (token: string) =>
+    api.get(`/invitations/validate/${token}`),
+  accept: (data: { token: string; name: string; password: string; phone_number?: string; whatsapp_number?: string }) =>
+    api.post('/invitations/accept', data),
+  cancel: (invitationId: string) =>
+    api.delete(`/invitations/${invitationId}`),
+  resend: (invitationId: string) =>
+    api.post(`/invitations/${invitationId}/resend`),
+}
+
 // Admin API
 export const adminApi = {
   getPerformance: (days: number = 30) =>
@@ -263,6 +279,35 @@ export const adminApi = {
     api.get('/admin/stats'),
   notifyManagers: (message: string) =>
     api.post('/admin/notify-managers', null, { params: { message } }),
+}
+
+// Notifications API
+export const notificationsApi = {
+  getSettings: () =>
+    api.get('/notifications/settings'),
+  updateSettings: (data: {
+    daily_summary_enabled?: boolean;
+    daily_summary_time?: string;
+    daily_summary_admin_id?: string;
+    task_completion_enabled?: boolean;
+    daily_reminders_enabled?: boolean;
+    daily_reminder_time?: string;
+  }) =>
+    api.patch('/notifications/settings', data),
+  getMyPreferences: () =>
+    api.get('/notifications/preferences'),
+  updateMyPreferences: (data: {
+    opt_out_daily_reminders?: boolean;
+    opt_out_task_assignments?: boolean;
+    opt_out_all_whatsapp?: boolean;
+  }) =>
+    api.patch('/notifications/preferences', data),
+  getLogs: (limit?: number, notificationType?: string) =>
+    api.get('/notifications/logs', { params: { limit, notification_type: notificationType } }),
+  testDailySummary: () =>
+    api.post('/notifications/test/daily-summary'),
+  testLabellerReminders: () =>
+    api.post('/notifications/test/labeller-reminders'),
 }
 
 // Data Management API

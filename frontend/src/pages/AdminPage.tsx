@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { usersApi, adminApi } from '../services/api'
+import { usersApi, adminApi, invitationsApi } from '../services/api'
 import Loading from '../components/common/Loading'
 import Modal from '../components/common/Modal'
 
@@ -23,6 +23,19 @@ interface SystemStats {
   tasks_completed: number
 }
 
+interface Invitation {
+  id: string
+  email: string
+  name: string | null
+  role: string
+  status: string
+  message: string | null
+  invited_by_name: string
+  created_at: string
+  expires_at: string
+  accepted_at: string | null
+}
+
 export default function AdminPage() {
   const [loading, setLoading] = useState(true)
   const [users, setUsers] = useState<User[]>([])
@@ -36,6 +49,22 @@ export default function AdminPage() {
   const [editModalOpen, setEditModalOpen] = useState(false)
   const [selectedUser, setSelectedUser] = useState<User | null>(null)
   
+  // Tab state
+  const [activeTab, setActiveTab] = useState<'users' | 'invitations'>('users')
+  
+  // Invitations state
+  const [invitations, setInvitations] = useState<Invitation[]>([])
+  const [inviteModalOpen, setInviteModalOpen] = useState(false)
+  const [inviteStatusFilter, setInviteStatusFilter] = useState('')
+  const [sendingInvite, setSendingInvite] = useState(false)
+  
+  const [inviteFormData, setInviteFormData] = useState({
+    email: '',
+    name: '',
+    role: 'labeller',
+    message: '',
+  })
+  
   const [formData, setFormData] = useState({
     email: '',
     name: '',
@@ -48,6 +77,12 @@ export default function AdminPage() {
   useEffect(() => {
     loadData()
   }, [page, roleFilter, search])
+
+  useEffect(() => {
+    if (activeTab === 'invitations') {
+      loadInvitations()
+    }
+  }, [activeTab, inviteStatusFilter])
 
   const loadData = async () => {
     try {
@@ -64,6 +99,87 @@ export default function AdminPage() {
     } finally {
       setLoading(false)
     }
+  }
+
+  const loadInvitations = async () => {
+    try {
+      const response = await invitationsApi.list(inviteStatusFilter || undefined)
+      setInvitations(response.data)
+    } catch (error) {
+      console.error('Failed to load invitations:', error)
+    }
+  }
+
+  const handleSendInvite = async () => {
+    if (!inviteFormData.email) {
+      alert('Please enter an email address')
+      return
+    }
+
+    setSendingInvite(true)
+    try {
+      await invitationsApi.create({
+        email: inviteFormData.email,
+        name: inviteFormData.name || undefined,
+        role: inviteFormData.role,
+        message: inviteFormData.message || undefined,
+      })
+      setInviteModalOpen(false)
+      setInviteFormData({ email: '', name: '', role: 'labeller', message: '' })
+      loadInvitations()
+      alert('Invitation sent successfully!')
+    } catch (error: any) {
+      console.error('Failed to send invitation:', error)
+      alert(error.response?.data?.detail || 'Failed to send invitation')
+    } finally {
+      setSendingInvite(false)
+    }
+  }
+
+  const handleCancelInvite = async (invitationId: string) => {
+    if (!confirm('Are you sure you want to cancel this invitation?')) return
+
+    try {
+      await invitationsApi.cancel(invitationId)
+      loadInvitations()
+    } catch (error: any) {
+      console.error('Failed to cancel invitation:', error)
+      alert(error.response?.data?.detail || 'Failed to cancel invitation')
+    }
+  }
+
+  const handleResendInvite = async (invitationId: string) => {
+    try {
+      await invitationsApi.resend(invitationId)
+      loadInvitations()
+      alert('Invitation resent!')
+    } catch (error: any) {
+      console.error('Failed to resend invitation:', error)
+      alert(error.response?.data?.detail || 'Failed to resend invitation')
+    }
+  }
+
+  const getStatusTag = (status: string) => {
+    const colors: Record<string, string> = {
+      pending: 'yellow',
+      accepted: 'green',
+      expired: 'red',
+    }
+    return (
+      <span className={`govuk-tag govuk-tag--${colors[status] || 'grey'}`}>
+        {status}
+      </span>
+    )
+  }
+
+  const formatDate = (dateString: string) => {
+    return new Date(dateString).toLocaleDateString('en-GB', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    })
   }
 
   const handleCreateUser = async () => {
@@ -184,8 +300,33 @@ export default function AdminPage() {
         </div>
       )}
 
-      {/* User Management */}
-      <h2 className="govuk-heading-l">User Management</h2>
+      {/* Tab Navigation */}
+      <div className="govuk-tabs" data-module="govuk-tabs">
+        <ul className="govuk-tabs__list">
+          <li className="govuk-tabs__list-item">
+            <a 
+              className={`govuk-tabs__tab ${activeTab === 'users' ? 'govuk-tabs__tab--selected' : ''}`}
+              href="#users"
+              onClick={(e) => { e.preventDefault(); setActiveTab('users'); }}
+            >
+              User Management
+            </a>
+          </li>
+          <li className="govuk-tabs__list-item">
+            <a 
+              className={`govuk-tabs__tab ${activeTab === 'invitations' ? 'govuk-tabs__tab--selected' : ''}`}
+              href="#invitations"
+              onClick={(e) => { e.preventDefault(); setActiveTab('invitations'); }}
+            >
+              Invitations
+            </a>
+          </li>
+        </ul>
+
+        {/* User Management Tab */}
+        {activeTab === 'users' && (
+          <section className="govuk-tabs__panel" id="users">
+            <h2 className="govuk-heading-l">User Management</h2>
 
       <div className="govuk-grid-row govuk-!-margin-bottom-4">
         <div className="govuk-grid-column-one-third">
@@ -279,27 +420,122 @@ export default function AdminPage() {
       </table>
 
       {/* Pagination */}
-      <nav className="govuk-pagination">
-        <p className="govuk-body">
-          Showing {(page - 1) * 20 + 1} to {Math.min(page * 20, total)} of {total} users
-        </p>
-        <div>
-          <button
-            className="govuk-button govuk-button--secondary govuk-!-margin-right-2"
-            disabled={page === 1}
-            onClick={() => setPage(page - 1)}
-          >
-            Previous
-          </button>
-          <button
-            className="govuk-button govuk-button--secondary"
-            disabled={page * 20 >= total}
-            onClick={() => setPage(page + 1)}
-          >
-            Next
-          </button>
-        </div>
-      </nav>
+            <nav className="govuk-pagination">
+              <p className="govuk-body">
+                Showing {(page - 1) * 20 + 1} to {Math.min(page * 20, total)} of {total} users
+              </p>
+              <div>
+                <button
+                  className="govuk-button govuk-button--secondary govuk-!-margin-right-2"
+                  disabled={page === 1}
+                  onClick={() => setPage(page - 1)}
+                >
+                  Previous
+                </button>
+                <button
+                  className="govuk-button govuk-button--secondary"
+                  disabled={page * 20 >= total}
+                  onClick={() => setPage(page + 1)}
+                >
+                  Next
+                </button>
+              </div>
+            </nav>
+          </section>
+        )}
+
+        {/* Invitations Tab */}
+        {activeTab === 'invitations' && (
+          <section className="govuk-tabs__panel" id="invitations">
+            <h2 className="govuk-heading-l">Invitations</h2>
+            
+            <div className="govuk-grid-row govuk-!-margin-bottom-4">
+              <div className="govuk-grid-column-one-half">
+                <div className="govuk-form-group">
+                  <label className="govuk-label" htmlFor="inviteStatusFilter">
+                    Filter by status
+                  </label>
+                  <select
+                    className="govuk-select"
+                    id="inviteStatusFilter"
+                    value={inviteStatusFilter}
+                    onChange={(e) => setInviteStatusFilter(e.target.value)}
+                  >
+                    <option value="">All statuses</option>
+                    <option value="pending">Pending</option>
+                    <option value="accepted">Accepted</option>
+                    <option value="expired">Expired</option>
+                  </select>
+                </div>
+              </div>
+              <div className="govuk-grid-column-one-half" style={{ display: 'flex', alignItems: 'flex-end' }}>
+                <button className="govuk-button" onClick={() => setInviteModalOpen(true)}>
+                  Send Invitation
+                </button>
+              </div>
+            </div>
+
+            {invitations.length === 0 ? (
+              <p className="govuk-body" style={{ color: '#6b7280', textAlign: 'center', padding: '40px' }}>
+                No invitations found. Click "Send Invitation" to invite new users.
+              </p>
+            ) : (
+              <table className="govuk-table">
+                <thead className="govuk-table__head">
+                  <tr className="govuk-table__row">
+                    <th className="govuk-table__header">Email</th>
+                    <th className="govuk-table__header">Name</th>
+                    <th className="govuk-table__header">Role</th>
+                    <th className="govuk-table__header">Status</th>
+                    <th className="govuk-table__header">Invited By</th>
+                    <th className="govuk-table__header">Sent</th>
+                    <th className="govuk-table__header">Expires</th>
+                    <th className="govuk-table__header">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="govuk-table__body">
+                  {invitations.map((invite) => (
+                    <tr key={invite.id} className="govuk-table__row">
+                      <td className="govuk-table__cell">{invite.email}</td>
+                      <td className="govuk-table__cell">{invite.name || '-'}</td>
+                      <td className="govuk-table__cell">{getRoleTag(invite.role)}</td>
+                      <td className="govuk-table__cell">{getStatusTag(invite.status)}</td>
+                      <td className="govuk-table__cell">{invite.invited_by_name}</td>
+                      <td className="govuk-table__cell">{formatDate(invite.created_at)}</td>
+                      <td className="govuk-table__cell">{formatDate(invite.expires_at)}</td>
+                      <td className="govuk-table__cell">
+                        {invite.status === 'pending' && (
+                          <>
+                            <button
+                              className="govuk-link govuk-!-margin-right-2"
+                              style={{ background: 'none', border: 'none', cursor: 'pointer' }}
+                              onClick={() => handleResendInvite(invite.id)}
+                            >
+                              Resend
+                            </button>
+                            <button
+                              className="govuk-link"
+                              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#d4351c' }}
+                              onClick={() => handleCancelInvite(invite.id)}
+                            >
+                              Cancel
+                            </button>
+                          </>
+                        )}
+                        {invite.status === 'accepted' && (
+                          <span style={{ color: '#6b7280' }}>
+                            Accepted {invite.accepted_at ? formatDate(invite.accepted_at) : ''}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </section>
+        )}
+      </div>
 
       {/* Create User Modal */}
       <Modal
@@ -453,6 +689,84 @@ export default function AdminPage() {
               setEditModalOpen(false)
               setSelectedUser(null)
               resetForm()
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      </Modal>
+
+      {/* Invite User Modal */}
+      <Modal
+        isOpen={inviteModalOpen}
+        onClose={() => {
+          setInviteModalOpen(false)
+          setInviteFormData({ email: '', name: '', role: 'labeller', message: '' })
+        }}
+        title="Send Invitation"
+      >
+        <p className="govuk-body govuk-!-margin-bottom-4">
+          Send an invitation email to a new user. They'll receive a link to create their account.
+        </p>
+        <div className="govuk-form-group">
+          <label className="govuk-label" htmlFor="inviteEmail">Email *</label>
+          <input
+            className="govuk-input"
+            id="inviteEmail"
+            type="email"
+            value={inviteFormData.email}
+            onChange={(e) => setInviteFormData({ ...inviteFormData, email: e.target.value })}
+            required
+          />
+        </div>
+        <div className="govuk-form-group">
+          <label className="govuk-label" htmlFor="inviteName">Name (optional)</label>
+          <p className="govuk-hint">They can change this when accepting the invitation</p>
+          <input
+            className="govuk-input"
+            id="inviteName"
+            value={inviteFormData.name}
+            onChange={(e) => setInviteFormData({ ...inviteFormData, name: e.target.value })}
+          />
+        </div>
+        <div className="govuk-form-group">
+          <label className="govuk-label" htmlFor="inviteRole">Role</label>
+          <select
+            className="govuk-select"
+            id="inviteRole"
+            value={inviteFormData.role}
+            onChange={(e) => setInviteFormData({ ...inviteFormData, role: e.target.value })}
+          >
+            <option value="labeller">Labeller</option>
+            <option value="labelling_manager">Labelling Manager</option>
+            <option value="admin">Admin</option>
+          </select>
+        </div>
+        <div className="govuk-form-group">
+          <label className="govuk-label" htmlFor="inviteMessage">Personal message (optional)</label>
+          <p className="govuk-hint">Add a personal note to the invitation email</p>
+          <textarea
+            className="govuk-textarea"
+            id="inviteMessage"
+            rows={3}
+            value={inviteFormData.message}
+            onChange={(e) => setInviteFormData({ ...inviteFormData, message: e.target.value })}
+            placeholder="Welcome to the team! Looking forward to working with you."
+          />
+        </div>
+        <div className="govuk-button-group">
+          <button 
+            className="govuk-button" 
+            onClick={handleSendInvite}
+            disabled={sendingInvite || !inviteFormData.email}
+          >
+            {sendingInvite ? 'Sending...' : 'Send Invitation'}
+          </button>
+          <button
+            className="govuk-button govuk-button--secondary"
+            onClick={() => {
+              setInviteModalOpen(false)
+              setInviteFormData({ email: '', name: '', role: 'labeller', message: '' })
             }}
           >
             Cancel

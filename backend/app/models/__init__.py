@@ -7,6 +7,7 @@ from app.models.gsv_image import GSVImage
 from app.models.spatial import CouncilBoundary, CombinedAuthority, RoadClassification
 from app.models.shapefile import Shapefile, EnhancementJob, UploadJob
 from app.models.download_log import DownloadLog
+from app.models.notification import NotificationSettings, UserNotificationPreferences, NotificationLog
 
 __all__ = [
     "User",
@@ -23,5 +24,8 @@ __all__ = [
     "EnhancementJob",
     "UploadJob",
     "DownloadLog",
+    "NotificationSettings",
+    "UserNotificationPreferences",
+    "NotificationLog",
 ]
 

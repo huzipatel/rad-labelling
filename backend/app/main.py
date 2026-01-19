@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 
 from app.core.config import settings
 from app.core.database import init_db, close_db
-from app.api.routes import auth, users, spreadsheets, tasks, labelling, exports, admin, data, invitations
+from app.api.routes import auth, users, spreadsheets, tasks, labelling, exports, admin, data, invitations, notifications
 
 
 @asynccontextmanager
@@ -49,6 +49,7 @@ app.include_router(exports.router, prefix=settings.API_V1_PREFIX)
 app.include_router(admin.router, prefix=settings.API_V1_PREFIX)
 app.include_router(data.router, prefix=settings.API_V1_PREFIX)
 app.include_router(invitations.router, prefix=settings.API_V1_PREFIX)
+app.include_router(notifications.router, prefix=settings.API_V1_PREFIX)
 
 
 @app.get("/")

@@ -413,6 +413,15 @@ async def save_label(
     
     await db.commit()
     
+    # Send task completion notification
+    if is_task_complete:
+        try:
+            from app.tasks.notification_tasks import send_task_completion_notification
+            send_task_completion_notification.delay(str(task.id), str(current_user.id))
+        except Exception as e:
+            # Don't fail the request if notification fails
+            print(f"[Notification] Failed to queue task completion notification: {e}")
+    
     return LabelSaveResponse(
         message="Label saved successfully",
         completed=task.completed_locations + task.failed_locations,

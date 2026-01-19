@@ -3,6 +3,7 @@ import { useAuthStore } from './store/authStore'
 import Layout from './components/common/Layout'
 import LoginPage from './pages/LoginPage'
 import RegisterPage from './pages/RegisterPage'
+import AcceptInvitePage from './pages/AcceptInvitePage'
 import DashboardPage from './pages/DashboardPage'
 import TasksPage from './pages/TasksPage'
 import LabellingPage from './pages/LabellingPage'
@@ -12,6 +13,7 @@ import UploadPage from './pages/UploadPage'
 import DataViewerPage from './pages/DataViewerPage'
 import PerformancePage from './pages/PerformancePage'
 import ExportsPage from './pages/ExportsPage'
+import NotificationsPage from './pages/NotificationsPage'
 
 function ProtectedRoute({ children, allowedRoles }: { children: React.ReactNode; allowedRoles?: string[] }) {
   const { user, isAuthenticated } = useAuthStore()
@@ -34,6 +36,7 @@ function App() {
     <Routes>
       <Route path="/login" element={isAuthenticated ? <Navigate to="/dashboard" /> : <LoginPage />} />
       <Route path="/register" element={isAuthenticated ? <Navigate to="/dashboard" /> : <RegisterPage />} />
+      <Route path="/accept-invite" element={<AcceptInvitePage />} />
       
       <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
         <Route index element={<Navigate to="/dashboard" replace />} />
@@ -90,6 +93,9 @@ function App() {
             </ProtectedRoute>
           } 
         />
+        
+        {/* Notifications - accessible to all authenticated users */}
+        <Route path="notifications" element={<NotificationsPage />} />
         
         {/* Admin routes */}
         <Route 

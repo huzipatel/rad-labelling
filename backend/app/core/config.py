@@ -40,7 +40,14 @@ class Settings(BaseSettings):
     # Twilio WhatsApp
     TWILIO_ACCOUNT_SID: str = ""
     TWILIO_AUTH_TOKEN: str = ""
-    TWILIO_WHATSAPP_NUMBER: str = ""
+    TWILIO_WHATSAPP_FROM: str = ""  # Twilio WhatsApp sandbox number (e.g., +14155238886)
+    
+    # Email (SMTP)
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    EMAIL_FROM: str = ""
     
     # Redis / Celery
     # Note: On Render, link the Key Value (Redis) service to set REDIS_URL
