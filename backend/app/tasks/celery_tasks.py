@@ -9,8 +9,8 @@ from app.core.config import settings
 # Create Celery app
 celery_app = Celery(
     "labelling_tasks",
-    broker=settings.CELERY_BROKER_URL,
-    backend=settings.CELERY_RESULT_BACKEND
+    broker=settings.celery_broker,
+    backend=settings.celery_backend
 )
 
 # Configure Celery

@@ -1,6 +1,7 @@
 #!/bin/bash
 
 echo "=== Starting Application ==="
+echo "Redis URL: ${REDIS_URL:-redis://localhost:6379/0}"
 
 # Start Celery worker in background
 echo "Starting Celery worker..."

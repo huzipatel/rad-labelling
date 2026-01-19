@@ -43,9 +43,19 @@ class Settings(BaseSettings):
     TWILIO_WHATSAPP_NUMBER: str = ""
     
     # Redis / Celery
+    # Note: On Render, link the Key Value (Redis) service to set REDIS_URL
+    # Celery will use REDIS_URL by default if CELERY_BROKER_URL/CELERY_RESULT_BACKEND aren't set
     REDIS_URL: str = "redis://localhost:6379/0"
-    CELERY_BROKER_URL: str = "redis://localhost:6379/0"
-    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/0"
+    CELERY_BROKER_URL: Optional[str] = None  # Falls back to REDIS_URL
+    CELERY_RESULT_BACKEND: Optional[str] = None  # Falls back to REDIS_URL
+    
+    @property
+    def celery_broker(self) -> str:
+        return self.CELERY_BROKER_URL or self.REDIS_URL
+    
+    @property
+    def celery_backend(self) -> str:
+        return self.CELERY_RESULT_BACKEND or self.REDIS_URL
     
     # CORS
     CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:5173"]
