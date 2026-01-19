@@ -26,10 +26,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Create upload directories
-RUN mkdir -p /app/uploads/images /app/uploads/shapefiles
+RUN mkdir -p /app/uploads/images /app/uploads/shapefiles /app/uploads/spreadsheets
+
+# Make startup script executable
+RUN chmod +x /app/start.sh
 
 # Expose port
 EXPOSE 8000
 
-# Run the application
-CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}
+# Run both Celery worker and FastAPI in one container
+CMD ["/app/start.sh"]
