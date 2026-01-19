@@ -109,9 +109,10 @@ async def init_db() -> None:
     """Initialize database tables."""
     # Import all models to ensure they're registered
     from app.models import (
-        User, Location, LocationType, Task, Label, GSVImage,
+        User, Invitation, Location, LocationType, Task, Label, GSVImage,
         CouncilBoundary, CombinedAuthority, RoadClassification,
-        Shapefile, EnhancementJob, UploadJob, DownloadLog
+        Shapefile, EnhancementJob, UploadJob, DownloadLog,
+        NotificationSettings, UserNotificationPreferences, NotificationLog
     )
     
     # Enable PostGIS extension first (required for geography/geometry types)
