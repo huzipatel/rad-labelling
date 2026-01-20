@@ -5,7 +5,7 @@ from typing import List, Optional
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, text, delete
+from sqlalchemy import select, func, and_, or_, text, delete
 from sqlalchemy.orm import selectinload, joinedload
 from pydantic import BaseModel
 
@@ -1185,25 +1185,47 @@ async def trigger_all_image_downloads(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_manager)
 ):
-    """Start image download for all pending tasks."""
+    """Start image download for all tasks that need downloading.
+    
+    This includes:
+    - Tasks with status 'pending' or 'assigned'
+    - Tasks with status 'ready' but 0 images downloaded (incorrectly marked as ready)
+    """
     from app.models.download_log import DownloadLog
     
-    # Get all tasks that need downloading
+    # Get all tasks that need downloading:
+    # 1. Status is pending or assigned
+    # 2. OR status is "ready" but has 0 images (incorrectly set to ready)
     result = await db.execute(
         select(Task).where(
-            Task.status.in_(["pending", "assigned"])
+            or_(
+                Task.status.in_(["pending", "assigned"]),
+                and_(
+                    Task.status == "ready",
+                    (Task.images_downloaded == 0) | (Task.images_downloaded == None)
+                )
+            )
         )
     )
     tasks = result.scalars().all()
     
     if not tasks:
         return {
-            "message": "No pending tasks found",
+            "message": "No tasks need downloading. All tasks either have images or are in progress.",
             "tasks_queued": 0
         }
     
     queued_count = 0
+    pending_count = 0
+    ready_but_empty_count = 0
+    
     for task in tasks:
+        # Track what kind of task this is
+        if task.status == "ready" and (task.images_downloaded or 0) == 0:
+            ready_but_empty_count += 1
+        else:
+            pending_count += 1
+        
         # Create download log
         download_log = DownloadLog(
             task_id=task.id,
@@ -1212,9 +1234,8 @@ async def trigger_all_image_downloads(
         )
         db.add(download_log)
         
-        # Update task status
-        if task.status == "pending":
-            task.status = "downloading"
+        # Update task status to downloading
+        task.status = "downloading"
         
         await db.flush()  # Get the download_log.id
         
@@ -1228,10 +1249,17 @@ async def trigger_all_image_downloads(
     
     await db.commit()
     
+    message_parts = []
+    if pending_count > 0:
+        message_parts.append(f"{pending_count} pending")
+    if ready_but_empty_count > 0:
+        message_parts.append(f"{ready_but_empty_count} ready-but-empty")
+    
     return {
-        "message": f"Started image download for {queued_count} tasks",
+        "message": f"Started image download for {queued_count} tasks ({', '.join(message_parts)})",
         "tasks_queued": queued_count,
-        "total_pending_tasks": len(tasks)
+        "pending_tasks": pending_count,
+        "ready_but_empty_tasks": ready_but_empty_count
     }
 
 
