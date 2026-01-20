@@ -127,43 +127,79 @@ async def init_db() -> None:
     print("[Database] Tables created successfully")
     
     # Add missing columns to existing tables (safe to run multiple times)
-    print("[Database] Checking for missing columns...")
-    async with engine.begin() as conn:
-        # Add columns to users table if they don't exist
-        await conn.execute(text("""
-            DO $$ 
-            BEGIN 
-                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='phone_number') THEN
-                    ALTER TABLE users ADD COLUMN phone_number VARCHAR(20);
-                END IF;
-                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='whatsapp_number') THEN
-                    ALTER TABLE users ADD COLUMN whatsapp_number VARCHAR(20);
-                END IF;
-                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='notify_daily_reminder') THEN
-                    ALTER TABLE users ADD COLUMN notify_daily_reminder BOOLEAN NOT NULL DEFAULT TRUE;
-                END IF;
-                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='notify_task_assigned') THEN
-                    ALTER TABLE users ADD COLUMN notify_task_assigned BOOLEAN NOT NULL DEFAULT TRUE;
-                END IF;
-            END $$;
-        """))
+    print("[Database] Adding missing columns to users table...")
+    try:
+        async with engine.begin() as conn:
+            # Check and add each column individually with explicit error handling
+            # phone_number
+            result = await conn.execute(text(
+                "SELECT column_name FROM information_schema.columns WHERE table_name='users' AND column_name='phone_number'"
+            ))
+            if not result.fetchone():
+                print("[Database] Adding phone_number column...")
+                await conn.execute(text("ALTER TABLE users ADD COLUMN phone_number VARCHAR(20)"))
+            
+            # whatsapp_number
+            result = await conn.execute(text(
+                "SELECT column_name FROM information_schema.columns WHERE table_name='users' AND column_name='whatsapp_number'"
+            ))
+            if not result.fetchone():
+                print("[Database] Adding whatsapp_number column...")
+                await conn.execute(text("ALTER TABLE users ADD COLUMN whatsapp_number VARCHAR(20)"))
+            
+            # notify_daily_reminder
+            result = await conn.execute(text(
+                "SELECT column_name FROM information_schema.columns WHERE table_name='users' AND column_name='notify_daily_reminder'"
+            ))
+            if not result.fetchone():
+                print("[Database] Adding notify_daily_reminder column...")
+                await conn.execute(text("ALTER TABLE users ADD COLUMN notify_daily_reminder BOOLEAN DEFAULT TRUE"))
+            
+            # notify_task_assigned
+            result = await conn.execute(text(
+                "SELECT column_name FROM information_schema.columns WHERE table_name='users' AND column_name='notify_task_assigned'"
+            ))
+            if not result.fetchone():
+                print("[Database] Adding notify_task_assigned column...")
+                await conn.execute(text("ALTER TABLE users ADD COLUMN notify_task_assigned BOOLEAN DEFAULT TRUE"))
         
-        # Add sample task columns to tasks table if they don't exist
-        await conn.execute(text("""
-            DO $$ 
-            BEGIN 
-                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='tasks' AND column_name='is_sample') THEN
-                    ALTER TABLE tasks ADD COLUMN is_sample BOOLEAN NOT NULL DEFAULT FALSE;
-                END IF;
-                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='tasks' AND column_name='source_task_id') THEN
-                    ALTER TABLE tasks ADD COLUMN source_task_id UUID REFERENCES tasks(id) ON DELETE SET NULL;
-                END IF;
-                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='tasks' AND column_name='sample_location_ids') THEN
-                    ALTER TABLE tasks ADD COLUMN sample_location_ids JSONB;
-                END IF;
-            END $$;
-        """))
-    print("[Database] Column check completed")
+        print("[Database] Users table columns updated")
+    except Exception as e:
+        print(f"[Database] Error adding user columns: {e}")
+    
+    # Add sample task columns
+    print("[Database] Adding missing columns to tasks table...")
+    try:
+        async with engine.begin() as conn:
+            # is_sample
+            result = await conn.execute(text(
+                "SELECT column_name FROM information_schema.columns WHERE table_name='tasks' AND column_name='is_sample'"
+            ))
+            if not result.fetchone():
+                print("[Database] Adding is_sample column...")
+                await conn.execute(text("ALTER TABLE tasks ADD COLUMN is_sample BOOLEAN DEFAULT FALSE"))
+            
+            # source_task_id
+            result = await conn.execute(text(
+                "SELECT column_name FROM information_schema.columns WHERE table_name='tasks' AND column_name='source_task_id'"
+            ))
+            if not result.fetchone():
+                print("[Database] Adding source_task_id column...")
+                await conn.execute(text("ALTER TABLE tasks ADD COLUMN source_task_id UUID"))
+            
+            # sample_location_ids
+            result = await conn.execute(text(
+                "SELECT column_name FROM information_schema.columns WHERE table_name='tasks' AND column_name='sample_location_ids'"
+            ))
+            if not result.fetchone():
+                print("[Database] Adding sample_location_ids column...")
+                await conn.execute(text("ALTER TABLE tasks ADD COLUMN sample_location_ids JSONB"))
+        
+        print("[Database] Tasks table columns updated")
+    except Exception as e:
+        print(f"[Database] Error adding task columns: {e}")
+    
+    print("[Database] Schema migration completed")
 
 
 async def close_db() -> None:
