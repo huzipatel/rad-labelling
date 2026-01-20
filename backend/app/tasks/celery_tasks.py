@@ -57,6 +57,13 @@ def download_task_images_celery(self, task_id: str, download_log_id: str = None)
     async def _download():
         print(f"[Celery GSV Download] Starting download for task {task_id}")
         
+        # Check GSV API key first
+        if not settings.GSV_API_KEY:
+            print(f"[Celery GSV Download] ERROR: GSV_API_KEY is not configured!")
+            return {"error": "GSV_API_KEY is not configured. Please set it in environment variables."}
+        
+        print(f"[Celery GSV Download] GSV_API_KEY configured: {settings.GSV_API_KEY[:8]}...")
+        
         session_maker = get_celery_session_maker()
         async with session_maker() as db:
             # Get task with location type
@@ -99,35 +106,36 @@ def download_task_images_celery(self, task_id: str, download_log_id: str = None)
                 location_type_name = task.location_type.name if task.location_type else "unknown"
                 
                 # Build location query based on task grouping
-                if task.group_field and task.group_value:
-                    if task.group_field == "council":
-                        location_query = select(Location).where(
-                            and_(
-                                Location.location_type_id == task.location_type_id,
-                                Location.council == task.group_value
-                            )
-                        )
-                    elif task.group_field == "combined_authority":
-                        location_query = select(Location).where(
-                            and_(
-                                Location.location_type_id == task.location_type_id,
-                                Location.combined_authority == task.group_value
-                            )
-                        )
-                    else:
-                        location_query = select(Location).where(
-                            and_(
-                                Location.location_type_id == task.location_type_id,
-                                Location.council == task.council
-                            )
-                        )
+                # Start with base query filtering by location type
+                from sqlalchemy import text
+                
+                base_query = select(Location).where(Location.location_type_id == task.location_type_id)
+                
+                # Handle different group field types
+                if task.group_field and task.group_field.startswith("original_"):
+                    # Group field is from original spreadsheet data (JSONB)
+                    original_key = task.group_field.replace("original_", "")
+                    location_query = base_query.where(
+                        text(f"original_data->>'{original_key}' = :group_value")
+                    ).params(group_value=task.group_value)
+                    print(f"[Celery GSV Download] Using original field '{original_key}' = '{task.group_value}'")
+                elif task.group_field == "council":
+                    location_query = base_query.where(Location.council == task.group_value)
+                    print(f"[Celery GSV Download] Using council = '{task.group_value}'")
+                elif task.group_field == "combined_authority":
+                    location_query = base_query.where(Location.combined_authority == task.group_value)
+                    print(f"[Celery GSV Download] Using combined_authority = '{task.group_value}'")
+                elif task.group_field == "road_classification":
+                    location_query = base_query.where(Location.road_classification == task.group_value)
+                    print(f"[Celery GSV Download] Using road_classification = '{task.group_value}'")
+                elif task.council:
+                    # Fallback to council field if no group_field set
+                    location_query = base_query.where(Location.council == task.council)
+                    print(f"[Celery GSV Download] Using council (fallback) = '{task.council}'")
                 else:
-                    location_query = select(Location).where(
-                        and_(
-                            Location.location_type_id == task.location_type_id,
-                            Location.council == task.council
-                        )
-                    )
+                    # No grouping - get all locations for this location type
+                    location_query = base_query
+                    print(f"[Celery GSV Download] No group filter - getting all locations for location_type_id={task.location_type_id}")
                 
                 locations_result = await db.execute(location_query)
                 locations = locations_result.scalars().all()
@@ -137,6 +145,18 @@ def download_task_images_celery(self, task_id: str, download_log_id: str = None)
                 await db.commit()
                 
                 print(f"[Celery GSV Download] Found {total_locations} locations to process")
+                print(f"[Celery GSV Download] Task info: group_field='{task.group_field}', group_value='{task.group_value}', council='{task.council}'")
+                
+                if total_locations == 0:
+                    # No locations found - this might indicate a query issue
+                    error_msg = f"No locations found for task. group_field='{task.group_field}', group_value='{task.group_value}'"
+                    print(f"[Celery GSV Download] WARNING: {error_msg}")
+                    download_log.status = "completed"
+                    download_log.completed_at = datetime.utcnow()
+                    download_log.last_error = error_msg
+                    task.status = "ready"  # Mark as ready even with 0 images
+                    await db.commit()
+                    return {"task_id": task_id, "images_downloaded": 0, "error": error_msg}
                 
                 # Initialize downloader
                 downloader = GSVDownloader()

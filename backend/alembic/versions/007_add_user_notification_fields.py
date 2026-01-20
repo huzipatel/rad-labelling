@@ -64,3 +64,4 @@ def downgrade() -> None:
     op.drop_column('users', 'whatsapp_number')
     op.drop_column('users', 'phone_number')
 
+

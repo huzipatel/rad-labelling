@@ -109,3 +109,4 @@ def downgrade() -> None:
     op.execute("ALTER TABLE tasks DROP COLUMN IF EXISTS source_task_id")
     op.execute("ALTER TABLE tasks DROP COLUMN IF EXISTS sample_location_ids")
 
+
