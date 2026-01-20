@@ -1179,6 +1179,62 @@ async def start_task(
     return {"message": "Task started"}
 
 
+@router.post("/download-all-images")
+async def trigger_all_image_downloads(
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_manager)
+):
+    """Start image download for all pending tasks."""
+    from app.models.download_log import DownloadLog
+    
+    # Get all tasks that need downloading
+    result = await db.execute(
+        select(Task).where(
+            Task.status.in_(["pending", "assigned"])
+        )
+    )
+    tasks = result.scalars().all()
+    
+    if not tasks:
+        return {
+            "message": "No pending tasks found",
+            "tasks_queued": 0
+        }
+    
+    queued_count = 0
+    for task in tasks:
+        # Create download log
+        download_log = DownloadLog(
+            task_id=task.id,
+            status="pending",
+            total_locations=task.total_locations
+        )
+        db.add(download_log)
+        
+        # Update task status
+        if task.status == "pending":
+            task.status = "downloading"
+        
+        await db.flush()  # Get the download_log.id
+        
+        # Queue the download
+        try:
+            from app.tasks.celery_tasks import download_task_images_celery
+            download_task_images_celery.delay(str(task.id), str(download_log.id))
+            queued_count += 1
+        except Exception as e:
+            print(f"Failed to queue download for task {task.id}: {e}")
+    
+    await db.commit()
+    
+    return {
+        "message": f"Started image download for {queued_count} tasks",
+        "tasks_queued": queued_count,
+        "total_pending_tasks": len(tasks)
+    }
+
+
 @router.post("/{task_id}/download-images")
 async def trigger_image_download(
     task_id: uuid.UUID,

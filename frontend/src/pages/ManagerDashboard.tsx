@@ -118,6 +118,9 @@ export default function ManagerDashboard() {
   const [loadingPreview, setLoadingPreview] = useState(false)
   const [creatingTasks, setCreatingTasks] = useState(false)
   
+  // Download all images state
+  const [downloadingAllImages, setDownloadingAllImages] = useState(false)
+  
   // Task detail modal
   const [selectedTask, setSelectedTask] = useState<Task | null>(null)
   const [taskDetailOpen, setTaskDetailOpen] = useState(false)
@@ -253,6 +256,22 @@ export default function ManagerDashboard() {
     } catch (error) {
       console.error('Failed to assign tasks:', error)
       alert('Failed to assign tasks')
+    }
+  }
+
+  const handleDownloadAllImages = async () => {
+    if (!confirm('This will start downloading images for all pending tasks. Continue?')) return
+    
+    setDownloadingAllImages(true)
+    try {
+      const response = await tasksApi.downloadAllImages()
+      alert(`Started downloading images for ${response.data.tasks_queued} tasks`)
+      loadData()
+    } catch (error) {
+      console.error('Failed to start downloads:', error)
+      alert('Failed to start image downloads')
+    } finally {
+      setDownloadingAllImages(false)
     }
   }
 
@@ -838,6 +857,13 @@ export default function ManagerDashboard() {
               onClick={handleOpenCreateModal}
             >
               + Create Tasks
+            </button>
+            <button 
+              className="govuk-button govuk-button--secondary govuk-!-margin-right-2"
+              onClick={handleDownloadAllImages}
+              disabled={downloadingAllImages}
+            >
+              {downloadingAllImages ? 'Starting Downloads...' : '⬇️ Download All Images'}
             </button>
             <button 
               className="govuk-button govuk-button--secondary govuk-!-margin-right-2"

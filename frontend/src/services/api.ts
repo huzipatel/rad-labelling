@@ -101,6 +101,10 @@ export const tasksApi = {
     api.delete(`/tasks/${taskId}`),
   bulkDeleteTasks: (taskIds: string[]) =>
     api.delete('/tasks/bulk-delete', { data: taskIds }),
+  downloadAllImages: () =>
+    api.post('/tasks/download-all-images'),
+  downloadTaskImages: (taskId: string) =>
+    api.post(`/tasks/${taskId}/download-images`),
   
   // Location filtering
   getLocationFilterFields: (locationTypeId: string) =>

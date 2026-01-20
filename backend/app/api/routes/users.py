@@ -118,10 +118,10 @@ async def list_labellers(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_manager)
 ):
-    """List all labellers for task assignment."""
+    """List all users who can be assigned tasks (labellers, managers, and admins)."""
     result = await db.execute(
         select(User).where(
-            User.role.in_(["labeller", "labelling_manager"]),
+            User.role.in_(["labeller", "labelling_manager", "admin"]),
             User.is_active == True
         ).order_by(User.name)
     )
