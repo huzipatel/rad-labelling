@@ -125,6 +125,45 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     print("[Database] Tables created successfully")
+    
+    # Add missing columns to existing tables (safe to run multiple times)
+    print("[Database] Checking for missing columns...")
+    async with engine.begin() as conn:
+        # Add columns to users table if they don't exist
+        await conn.execute(text("""
+            DO $$ 
+            BEGIN 
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='phone_number') THEN
+                    ALTER TABLE users ADD COLUMN phone_number VARCHAR(20);
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='whatsapp_number') THEN
+                    ALTER TABLE users ADD COLUMN whatsapp_number VARCHAR(20);
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='notify_daily_reminder') THEN
+                    ALTER TABLE users ADD COLUMN notify_daily_reminder BOOLEAN NOT NULL DEFAULT TRUE;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='notify_task_assigned') THEN
+                    ALTER TABLE users ADD COLUMN notify_task_assigned BOOLEAN NOT NULL DEFAULT TRUE;
+                END IF;
+            END $$;
+        """))
+        
+        # Add sample task columns to tasks table if they don't exist
+        await conn.execute(text("""
+            DO $$ 
+            BEGIN 
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='tasks' AND column_name='is_sample') THEN
+                    ALTER TABLE tasks ADD COLUMN is_sample BOOLEAN NOT NULL DEFAULT FALSE;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='tasks' AND column_name='source_task_id') THEN
+                    ALTER TABLE tasks ADD COLUMN source_task_id UUID REFERENCES tasks(id) ON DELETE SET NULL;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='tasks' AND column_name='sample_location_ids') THEN
+                    ALTER TABLE tasks ADD COLUMN sample_location_ids JSONB;
+                END IF;
+            END $$;
+        """))
+    print("[Database] Column check completed")
 
 
 async def close_db() -> None:
