@@ -1187,12 +1187,13 @@ async def trigger_all_image_downloads(
 ):
     """Start image download for all tasks that need downloading.
     
+    Downloads are processed SEQUENTIALLY (one task at a time) to prevent
+    overwhelming the GSV API and to provide clearer progress tracking.
+    
     This includes:
     - Tasks with status 'pending' or 'assigned'
     - Tasks with status 'ready' but 0 images downloaded (incorrectly marked as ready)
     """
-    from app.models.download_log import DownloadLog
-    
     # Get all tasks that need downloading:
     # 1. Status is pending or assigned
     # 2. OR status is "ready" but has 0 images (incorrectly set to ready)
@@ -1205,7 +1206,7 @@ async def trigger_all_image_downloads(
                     (Task.images_downloaded == 0) | (Task.images_downloaded == None)
                 )
             )
-        )
+        ).order_by(Task.created_at)  # Process in order of creation
     )
     tasks = result.scalars().all()
     
@@ -1215,39 +1216,39 @@ async def trigger_all_image_downloads(
             "tasks_queued": 0
         }
     
-    queued_count = 0
     pending_count = 0
     ready_but_empty_count = 0
+    task_ids = []
     
     for task in tasks:
+        task_ids.append(str(task.id))
+        
         # Track what kind of task this is
         if task.status == "ready" and (task.images_downloaded or 0) == 0:
             ready_but_empty_count += 1
         else:
             pending_count += 1
         
-        # Create download log
-        download_log = DownloadLog(
-            task_id=task.id,
-            status="pending",
-            total_locations=task.total_locations
-        )
-        db.add(download_log)
-        
-        # Update task status to downloading
-        task.status = "downloading"
-        
-        await db.flush()  # Get the download_log.id
-        
-        # Queue the download
-        try:
-            from app.tasks.celery_tasks import download_task_images_celery
-            download_task_images_celery.delay(str(task.id), str(download_log.id))
-            queued_count += 1
-        except Exception as e:
-            print(f"Failed to queue download for task {task.id}: {e}")
+        # Mark first task as downloading, others as pending (will be updated when processed)
+        if len(task_ids) == 1:
+            task.status = "downloading"
+        else:
+            task.status = "pending"
     
     await db.commit()
+    
+    # Queue a SINGLE sequential task that processes all tasks one by one
+    try:
+        from app.tasks.celery_tasks import download_all_tasks_sequential
+        download_all_tasks_sequential.delay(task_ids)
+        print(f"[Download All] Queued sequential download for {len(task_ids)} tasks")
+    except Exception as e:
+        print(f"[Download All] Failed to queue sequential download: {e}")
+        return {
+            "message": f"Failed to start downloads: {str(e)}",
+            "tasks_queued": 0,
+            "error": str(e)
+        }
     
     message_parts = []
     if pending_count > 0:
@@ -1256,10 +1257,11 @@ async def trigger_all_image_downloads(
         message_parts.append(f"{ready_but_empty_count} ready-but-empty")
     
     return {
-        "message": f"Started image download for {queued_count} tasks ({', '.join(message_parts)})",
-        "tasks_queued": queued_count,
+        "message": f"Started SEQUENTIAL download for {len(task_ids)} tasks ({', '.join(message_parts)}). Tasks will be processed one at a time.",
+        "tasks_queued": len(task_ids),
         "pending_tasks": pending_count,
-        "ready_but_empty_tasks": ready_but_empty_count
+        "ready_but_empty_tasks": ready_but_empty_count,
+        "processing_mode": "sequential"
     }
 
 

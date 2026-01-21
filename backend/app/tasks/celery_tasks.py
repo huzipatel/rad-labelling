@@ -261,6 +261,209 @@ def download_task_images_celery(self, task_id: str, download_log_id: str = None)
     return run_async(_download())
 
 
+@celery_app.task(bind=True, name="download_all_tasks_sequential", max_retries=1)
+def download_all_tasks_sequential(self, task_ids: list):
+    """
+    Download images for multiple tasks SEQUENTIALLY (one at a time).
+    
+    This ensures tasks are processed in order and prevents overwhelming
+    the GSV API or worker resources.
+    """
+    from app.core.database import get_celery_session_maker
+    from app.models.task import Task
+    from app.models.location import Location
+    from app.models.gsv_image import GSVImage
+    from app.models.download_log import DownloadLog
+    from app.services.gsv_downloader import GSVDownloader
+    from sqlalchemy import select, and_, text
+    from sqlalchemy.orm import selectinload
+    from datetime import datetime
+    import traceback
+    
+    async def _download_all():
+        print(f"[Celery Sequential] Starting sequential download for {len(task_ids)} tasks")
+        
+        # Check GSV API key first
+        if not settings.GSV_API_KEY:
+            print(f"[Celery Sequential] ERROR: GSV_API_KEY is not configured!")
+            return {"error": "GSV_API_KEY is not configured"}
+        
+        print(f"[Celery Sequential] GSV_API_KEY configured: {settings.GSV_API_KEY[:8]}...")
+        
+        session_maker = get_celery_session_maker()
+        results = []
+        
+        for task_index, task_id in enumerate(task_ids):
+            print(f"\n[Celery Sequential] === Processing task {task_index + 1}/{len(task_ids)}: {task_id} ===")
+            
+            # Update Celery state
+            self.update_state(
+                state="PROGRESS",
+                meta={
+                    "current_task": task_index + 1,
+                    "total_tasks": len(task_ids),
+                    "current_task_id": task_id,
+                    "percent": int((task_index / len(task_ids)) * 100)
+                }
+            )
+            
+            async with session_maker() as db:
+                try:
+                    # Get task with location type
+                    result = await db.execute(
+                        select(Task).options(selectinload(Task.location_type)).where(Task.id == UUID(task_id))
+                    )
+                    task = result.scalar_one_or_none()
+                    
+                    if not task:
+                        print(f"[Celery Sequential] Task {task_id} not found, skipping")
+                        results.append({"task_id": task_id, "error": "Task not found"})
+                        continue
+                    
+                    # Create download log
+                    download_log = DownloadLog(
+                        task_id=task.id,
+                        status="in_progress",
+                        started_at=datetime.utcnow(),
+                        total_locations=task.total_locations
+                    )
+                    db.add(download_log)
+                    
+                    # Update task status
+                    task.status = "downloading"
+                    await db.commit()
+                    await db.refresh(download_log)
+                    
+                    # Get location type info
+                    location_type_name = task.location_type.name if task.location_type else "unknown"
+                    
+                    # Build location query based on task grouping
+                    base_query = select(Location).where(Location.location_type_id == task.location_type_id)
+                    
+                    # Handle different group field types
+                    if task.group_field and task.group_field.startswith("original_"):
+                        original_key = task.group_field.replace("original_", "")
+                        location_query = base_query.where(
+                            text(f"original_data->>'{original_key}' = :group_value")
+                        ).params(group_value=task.group_value)
+                        print(f"[Celery Sequential] Using original field '{original_key}' = '{task.group_value}'")
+                    elif task.group_field == "council":
+                        location_query = base_query.where(Location.council == task.group_value)
+                    elif task.group_field == "combined_authority":
+                        location_query = base_query.where(Location.combined_authority == task.group_value)
+                    elif task.group_field == "road_classification":
+                        location_query = base_query.where(Location.road_classification == task.group_value)
+                    elif task.council:
+                        location_query = base_query.where(Location.council == task.council)
+                    else:
+                        location_query = base_query
+                    
+                    locations_result = await db.execute(location_query)
+                    locations = locations_result.scalars().all()
+                    
+                    total_locations = len(locations)
+                    download_log.total_locations = total_locations
+                    await db.commit()
+                    
+                    print(f"[Celery Sequential] Found {total_locations} locations for task {task.name or task.group_value}")
+                    
+                    if total_locations == 0:
+                        download_log.status = "completed"
+                        download_log.completed_at = datetime.utcnow()
+                        download_log.last_error = "No locations found"
+                        task.status = "ready"
+                        await db.commit()
+                        results.append({"task_id": task_id, "images_downloaded": 0, "error": "No locations found"})
+                        continue
+                    
+                    # Initialize downloader
+                    downloader = GSVDownloader()
+                    
+                    images_downloaded = 0
+                    failed_downloads = 0
+                    skipped_existing = 0
+                    processed = 0
+                    
+                    for location in locations:
+                        processed += 1
+                        download_log.processed_locations = processed
+                        download_log.current_location_id = location.id
+                        download_log.current_location_identifier = location.identifier
+                        
+                        # Check if images already exist
+                        existing_result = await db.execute(
+                            select(GSVImage).where(GSVImage.location_id == location.id)
+                        )
+                        existing_images = existing_result.scalars().all()
+                        
+                        if existing_images:
+                            skipped_existing += len(existing_images)
+                            download_log.skipped_existing = skipped_existing
+                            continue
+                        
+                        try:
+                            location_council = location.council or task.group_value or "unspecified"
+                            
+                            downloaded = await downloader.download_images_for_location(
+                                db=db,
+                                location_id=location.id,
+                                latitude=location.latitude,
+                                longitude=location.longitude,
+                                identifier=location.identifier,
+                                location_type=location_type_name,
+                                council=location_council
+                            )
+                            images_downloaded += downloaded
+                            download_log.successful_downloads += downloaded
+                            
+                        except Exception as e:
+                            print(f"[Celery Sequential] Error for {location.identifier}: {e}")
+                            failed_downloads += 1
+                            download_log.failed_downloads = failed_downloads
+                            download_log.last_error = str(e)
+                            download_log.error_count += 1
+                        
+                        # Update progress
+                        task.images_downloaded = images_downloaded
+                        await db.commit()
+                        
+                        # Log progress every 10 locations
+                        if processed % 10 == 0:
+                            print(f"[Celery Sequential] Task {task_index + 1}: {processed}/{total_locations} locations, {images_downloaded} images")
+                    
+                    # Mark task as ready
+                    task.images_downloaded = images_downloaded
+                    task.status = "ready"
+                    
+                    download_log.status = "completed"
+                    download_log.completed_at = datetime.utcnow()
+                    download_log.current_location_id = None
+                    download_log.current_location_identifier = None
+                    
+                    await db.commit()
+                    
+                    print(f"[Celery Sequential] Task {task_index + 1} complete: {images_downloaded} images, {skipped_existing} skipped, {failed_downloads} failed")
+                    
+                    results.append({
+                        "task_id": task_id,
+                        "task_name": task.name or task.group_value,
+                        "images_downloaded": images_downloaded,
+                        "skipped_existing": skipped_existing,
+                        "failed_downloads": failed_downloads,
+                        "total_locations": total_locations
+                    })
+                    
+                except Exception as e:
+                    error_msg = f"Error processing task {task_id}: {str(e)}"
+                    print(f"[Celery Sequential] {error_msg}\n{traceback.format_exc()}")
+                    results.append({"task_id": task_id, "error": str(e)})
+        
+        print(f"\n[Celery Sequential] === All {len(task_ids)} tasks completed ===")
+        return {"completed": len(results), "results": results}
+    
+    return run_async(_download_all())
+
+
 @celery_app.task(bind=True, name="enhance_locations", max_retries=3)
 def enhance_locations(self, location_type_id: str):
     """

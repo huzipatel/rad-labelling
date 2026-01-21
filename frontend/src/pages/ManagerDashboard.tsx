@@ -219,7 +219,30 @@ export default function ManagerDashboard() {
         council: filterCouncil || undefined,
         assigned_to: filterAssignee || undefined,
       })
-      setTasks(tasksRes.data.tasks)
+      // Sort tasks: downloading first, then by status priority, then by download progress
+      const statusPriority: Record<string, number> = {
+        'downloading': 0,
+        'pending': 1,
+        'ready': 2,
+        'in_progress': 3,
+        'completed': 4,
+        'failed': 5,
+      }
+      const sortedTasks = [...tasksRes.data.tasks].sort((a, b) => {
+        // First, sort by status priority
+        const aPriority = statusPriority[a.status] ?? 99
+        const bPriority = statusPriority[b.status] ?? 99
+        if (aPriority !== bPriority) return aPriority - bPriority
+        
+        // Then by download progress (less downloaded first for pending/downloading)
+        if (a.status === 'downloading' || a.status === 'pending') {
+          return (a.download_progress || 0) - (b.download_progress || 0)
+        }
+        
+        // For ready/in_progress, sort by completion percentage
+        return (a.completion_percentage || 0) - (b.completion_percentage || 0)
+      })
+      setTasks(sortedTasks)
       setTotal(tasksRes.data.total)
     } catch (error) {
       console.error('Failed to load tasks:', error)
