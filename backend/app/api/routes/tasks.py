@@ -1185,55 +1185,72 @@ async def trigger_all_image_downloads(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_manager)
 ):
-    """Start image download for all tasks that need downloading.
+    """Start image download for ALL tasks that need images.
     
     Downloads are processed SEQUENTIALLY (one task at a time) to prevent
     overwhelming the GSV API and to provide clearer progress tracking.
     
-    This includes:
-    - Tasks with status 'pending' or 'assigned'
-    - Tasks with status 'ready' but 0 images downloaded (incorrectly marked as ready)
+    This is ROBUST and includes ANY task where:
+    - images_downloaded is 0, NULL, or less than total_images
+    - Status is NOT 'completed' (labelling complete) or 'in_progress' (being labelled)
     """
-    # Get all tasks that need downloading:
-    # 1. Status is pending or assigned
-    # 2. OR status is "ready" but has 0 images (incorrectly set to ready)
-    result = await db.execute(
-        select(Task).where(
-            or_(
-                Task.status.in_(["pending", "assigned"]),
-                and_(
-                    Task.status == "ready",
-                    (Task.images_downloaded == 0) | (Task.images_downloaded == None)
-                )
-            )
-        ).order_by(Task.created_at)  # Process in order of creation
-    )
-    tasks = result.scalars().all()
+    from sqlalchemy import case, coalesce
     
-    if not tasks:
+    # Get ALL tasks first, then filter in Python for maximum robustness
+    result = await db.execute(
+        select(Task).order_by(Task.created_at)
+    )
+    all_tasks = result.scalars().all()
+    
+    # Filter tasks that need downloading - be very inclusive
+    tasks_needing_download = []
+    status_breakdown = {}
+    
+    for task in all_tasks:
+        images_downloaded = task.images_downloaded or 0
+        total_images = task.total_images or 0
+        
+        # Skip tasks that are actively being labelled or completed labelling
+        if task.status in ['completed', 'in_progress']:
+            continue
+        
+        # Include task if it doesn't have all its images
+        needs_download = False
+        reason = ""
+        
+        if images_downloaded == 0:
+            needs_download = True
+            reason = "no_images"
+        elif total_images > 0 and images_downloaded < total_images:
+            needs_download = True
+            reason = "partial_images"
+        elif task.status in ['pending', 'assigned', 'downloading']:
+            # Also include any task with these statuses regardless of image count
+            needs_download = True
+            reason = f"status_{task.status}"
+        
+        if needs_download:
+            tasks_needing_download.append(task)
+            status_breakdown[reason] = status_breakdown.get(reason, 0) + 1
+    
+    print(f"[Download All] Found {len(tasks_needing_download)} tasks needing download out of {len(all_tasks)} total")
+    print(f"[Download All] Breakdown: {status_breakdown}")
+    
+    if not tasks_needing_download:
         return {
-            "message": "No tasks need downloading. All tasks either have images or are in progress.",
-            "tasks_queued": 0
+            "message": "No tasks need downloading. All tasks have complete images or are being labelled.",
+            "tasks_queued": 0,
+            "total_tasks_checked": len(all_tasks)
         }
     
-    pending_count = 0
-    ready_but_empty_count = 0
     task_ids = []
     
-    for task in tasks:
+    for i, task in enumerate(tasks_needing_download):
         task_ids.append(str(task.id))
         
-        # Track what kind of task this is
-        if task.status == "ready" and (task.images_downloaded or 0) == 0:
-            ready_but_empty_count += 1
-        else:
-            pending_count += 1
-        
-        # Mark first task as downloading, others as pending (will be updated when processed)
-        if len(task_ids) == 1:
+        # Mark first task as downloading, others stay as-is until processed
+        if i == 0:
             task.status = "downloading"
-        else:
-            task.status = "pending"
     
     await db.commit()
     
@@ -1241,26 +1258,22 @@ async def trigger_all_image_downloads(
     try:
         from app.tasks.celery_tasks import download_all_tasks_sequential
         download_all_tasks_sequential.delay(task_ids)
-        print(f"[Download All] Queued sequential download for {len(task_ids)} tasks")
+        print(f"[Download All] Queued sequential download for {len(task_ids)} tasks: {task_ids[:5]}...")
     except Exception as e:
         print(f"[Download All] Failed to queue sequential download: {e}")
+        import traceback
+        traceback.print_exc()
         return {
             "message": f"Failed to start downloads: {str(e)}",
             "tasks_queued": 0,
             "error": str(e)
         }
     
-    message_parts = []
-    if pending_count > 0:
-        message_parts.append(f"{pending_count} pending")
-    if ready_but_empty_count > 0:
-        message_parts.append(f"{ready_but_empty_count} ready-but-empty")
-    
     return {
-        "message": f"Started SEQUENTIAL download for {len(task_ids)} tasks ({', '.join(message_parts)}). Tasks will be processed one at a time.",
+        "message": f"Started SEQUENTIAL download for {len(task_ids)} tasks. Tasks will be processed one at a time.",
         "tasks_queued": len(task_ids),
-        "pending_tasks": pending_count,
-        "ready_but_empty_tasks": ready_but_empty_count,
+        "breakdown": status_breakdown,
+        "total_tasks_checked": len(all_tasks),
         "processing_mode": "sequential"
     }
 
