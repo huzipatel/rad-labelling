@@ -1194,8 +1194,6 @@ async def trigger_all_image_downloads(
     - images_downloaded is 0, NULL, or less than total_images
     - Status is NOT 'completed' (labelling complete) or 'in_progress' (being labelled)
     """
-    from sqlalchemy import case, coalesce
-    
     # Get ALL tasks first, then filter in Python for maximum robustness
     result = await db.execute(
         select(Task).order_by(Task.created_at)
