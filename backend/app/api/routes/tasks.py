@@ -1187,13 +1187,17 @@ async def trigger_all_image_downloads(
 ):
     """Start image download for ALL tasks that need images.
     
-    Downloads are processed SEQUENTIALLY (one task at a time) to prevent
-    overwhelming the GSV API and to provide clearer progress tracking.
+    Downloads are processed IN PARALLEL - each task is queued as a separate
+    Celery task, allowing maximum throughput within GSV API limits.
     
     This is ROBUST and includes ANY task where:
     - images_downloaded is 0, NULL, or less than total_images
     - Status is NOT 'completed' (labelling complete) or 'in_progress' (being labelled)
+    
+    Already-downloaded images are automatically skipped within each task.
     """
+    from app.models.download_log import DownloadLog
+    
     # Get ALL tasks first, then filter in Python for maximum robustness
     result = await db.execute(
         select(Task).order_by(Task.created_at)
@@ -1222,8 +1226,8 @@ async def trigger_all_image_downloads(
         elif total_images > 0 and images_downloaded < total_images:
             needs_download = True
             reason = "partial_images"
-        elif task.status in ['pending', 'assigned', 'downloading']:
-            # Also include any task with these statuses regardless of image count
+        elif task.status in ['pending', 'assigned', 'downloading', 'ready']:
+            # Include any task that might need images
             needs_download = True
             reason = f"status_{task.status}"
         
@@ -1241,38 +1245,41 @@ async def trigger_all_image_downloads(
             "total_tasks_checked": len(all_tasks)
         }
     
-    task_ids = []
+    queued_count = 0
     
-    for i, task in enumerate(tasks_needing_download):
-        task_ids.append(str(task.id))
+    # Queue each task INDIVIDUALLY for parallel processing
+    for task in tasks_needing_download:
+        # Create download log
+        download_log = DownloadLog(
+            task_id=task.id,
+            status="pending",
+            total_locations=task.total_locations
+        )
+        db.add(download_log)
         
-        # Mark first task as downloading, others stay as-is until processed
-        if i == 0:
-            task.status = "downloading"
+        # Update task status to downloading
+        task.status = "downloading"
+        
+        await db.flush()  # Get the download_log.id
+        
+        # Queue individual download task
+        try:
+            from app.tasks.celery_tasks import download_task_images_celery
+            download_task_images_celery.delay(str(task.id), str(download_log.id))
+            queued_count += 1
+        except Exception as e:
+            print(f"[Download All] Failed to queue task {task.id}: {e}")
     
     await db.commit()
     
-    # Queue a SINGLE sequential task that processes all tasks one by one
-    try:
-        from app.tasks.celery_tasks import download_all_tasks_sequential
-        download_all_tasks_sequential.delay(task_ids)
-        print(f"[Download All] Queued sequential download for {len(task_ids)} tasks: {task_ids[:5]}...")
-    except Exception as e:
-        print(f"[Download All] Failed to queue sequential download: {e}")
-        import traceback
-        traceback.print_exc()
-        return {
-            "message": f"Failed to start downloads: {str(e)}",
-            "tasks_queued": 0,
-            "error": str(e)
-        }
+    print(f"[Download All] Queued {queued_count} tasks for PARALLEL download")
     
     return {
-        "message": f"Started SEQUENTIAL download for {len(task_ids)} tasks. Tasks will be processed one at a time.",
-        "tasks_queued": len(task_ids),
+        "message": f"Started PARALLEL download for {queued_count} tasks. Tasks will download simultaneously.",
+        "tasks_queued": queued_count,
         "breakdown": status_breakdown,
         "total_tasks_checked": len(all_tasks),
-        "processing_mode": "sequential"
+        "processing_mode": "parallel"
     }
 
 
@@ -1283,7 +1290,11 @@ async def trigger_image_download(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_manager)
 ):
-    """Manually trigger image download for a task."""
+    """Manually trigger image download for a task.
+    
+    This can be called for ANY task regardless of status.
+    Already-downloaded images will be automatically skipped.
+    """
     from app.models.download_log import DownloadLog
     
     result = await db.execute(select(Task).where(Task.id == task_id))
@@ -1300,9 +1311,9 @@ async def trigger_image_download(
     )
     db.add(download_log)
     
-    # Update task status
-    if task.status == "pending":
-        task.status = "downloading"
+    # Always set status to downloading (will be set to ready when complete)
+    previous_status = task.status
+    task.status = "downloading"
     
     await db.commit()
     await db.refresh(download_log)
@@ -1316,10 +1327,11 @@ async def trigger_image_download(
         background_tasks.add_task(download_task_images, str(task.id), str(download_log.id))
     
     return {
-        "message": "Image download started",
+        "message": f"Image download started (was {previous_status}). Existing images will be skipped.",
         "task_id": str(task_id),
         "download_log_id": str(download_log.id),
-        "total_images": task.total_images
+        "total_images": task.total_images,
+        "images_already_downloaded": task.images_downloaded or 0
     }
 
 

@@ -21,7 +21,10 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
     task_track_started=True,
-    task_time_limit=3600,  # 1 hour max per task
+    task_time_limit=43200,  # 12 hours max per task (for large downloads)
+    task_soft_time_limit=42000,  # 11.5 hours soft limit (allows graceful shutdown)
+    worker_prefetch_multiplier=1,  # Only fetch one task at a time per worker
+    task_acks_late=True,  # Acknowledge tasks after completion (safer for long tasks)
 )
 
 

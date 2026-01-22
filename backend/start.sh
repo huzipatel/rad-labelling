@@ -8,8 +8,9 @@ echo "Running database migrations..."
 alembic upgrade head || echo "Migration warning (may already be applied)"
 
 # Start Celery worker in background
-echo "Starting Celery worker..."
-celery -A app.tasks.celery_tasks worker --loglevel=info --concurrency=2 &
+# Concurrency of 4 allows parallel downloads while respecting GSV API limits
+echo "Starting Celery worker with concurrency=4..."
+celery -A app.tasks.celery_tasks worker --loglevel=info --concurrency=4 &
 CELERY_PID=$!
 echo "Celery worker started with PID: $CELERY_PID"
 
