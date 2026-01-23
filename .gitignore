@@ -77,6 +77,7 @@ credentials/
 !tsconfig.json
 !tsconfig.node.json
 !railway.json
+!vercel.json
 
 # Logs
 *.log
