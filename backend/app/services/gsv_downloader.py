@@ -7,6 +7,7 @@ import httpx
 
 from app.core.config import settings
 from app.services.gcs_storage import GCSStorage
+from app.services.gsv_key_manager import gsv_key_manager
 
 
 # Standard headings for 360-degree coverage
@@ -14,13 +15,22 @@ HEADINGS = [0, 90, 180, 270]
 
 
 class GSVDownloader:
-    """Download images from Google Street View API and store in organized folders."""
+    """Download images from Google Street View API and store in organized folders.
+    
+    Uses the GSV Key Manager for automatic key rotation and failover.
+    """
     
     def __init__(self):
-        self.api_key = settings.GSV_API_KEY
         self.base_url = "https://maps.googleapis.com/maps/api/streetview"
         self.metadata_url = f"{self.base_url}/metadata"
         self.storage = GCSStorage()
+    
+    async def _get_api_key(self) -> Optional[str]:
+        """Get an available API key from the key manager."""
+        key = await gsv_key_manager.get_key()
+        if not key:
+            print("[GSV] ERROR: No API keys available!")
+        return key
     
     async def get_metadata(
         self,
@@ -31,29 +41,62 @@ class GSVDownloader:
         Get Street View metadata for a location.
         
         Returns pano_id and capture date if available.
+        Uses key rotation and automatic failover.
         """
+        api_key = await self._get_api_key()
+        if not api_key:
+            return None
+        
         params = {
             "location": f"{latitude},{longitude}",
-            "key": self.api_key
+            "key": api_key
         }
         
-        async with httpx.AsyncClient() as client:
-            response = await client.get(self.metadata_url, params=params)
-            
-            if response.status_code != 200:
+        # Apply rate limiting
+        await gsv_key_manager.throttle()
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            try:
+                response = await client.get(self.metadata_url, params=params)
+                
+                # Record the request result
+                await gsv_key_manager.record_request(
+                    api_key, 
+                    success=response.status_code == 200,
+                    status_code=response.status_code
+                )
+                
+                if response.status_code == 403:
+                    # Try with a different key
+                    print(f"[GSV] 403 on metadata, trying different key...")
+                    new_key = await self._get_api_key()
+                    if new_key and new_key != api_key:
+                        params["key"] = new_key
+                        await gsv_key_manager.throttle()
+                        response = await client.get(self.metadata_url, params=params)
+                        await gsv_key_manager.record_request(
+                            new_key,
+                            success=response.status_code == 200,
+                            status_code=response.status_code
+                        )
+                
+                if response.status_code != 200:
+                    return None
+                
+                data = response.json()
+                
+                if data.get("status") != "OK":
+                    return None
+                
+                return {
+                    "pano_id": data.get("pano_id"),
+                    "date": data.get("date"),  # Format: "YYYY-MM"
+                    "location": data.get("location"),
+                    "status": data.get("status")
+                }
+            except Exception as e:
+                print(f"[GSV] Error getting metadata: {e}")
                 return None
-            
-            data = response.json()
-            
-            if data.get("status") != "OK":
-                return None
-            
-            return {
-                "pano_id": data.get("pano_id"),
-                "date": data.get("date"),  # Format: "YYYY-MM"
-                "location": data.get("location"),
-                "status": data.get("status")
-            }
     
     async def download_image(
         self,
@@ -77,21 +120,53 @@ class GSVDownloader:
         
         capture_date = metadata.get("date")
         
+        api_key = await self._get_api_key()
+        if not api_key:
+            return None
+        
         params = {
             "size": size,
             "location": f"{latitude},{longitude}",
             "heading": heading,
             "pitch": pitch,
-            "key": self.api_key
+            "key": api_key
         }
         
-        async with httpx.AsyncClient() as client:
-            response = await client.get(self.base_url, params=params)
-            
-            if response.status_code != 200:
+        # Apply rate limiting
+        await gsv_key_manager.throttle()
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            try:
+                response = await client.get(self.base_url, params=params)
+                
+                # Record the request result
+                await gsv_key_manager.record_request(
+                    api_key,
+                    success=response.status_code == 200,
+                    status_code=response.status_code
+                )
+                
+                if response.status_code == 403:
+                    # Try with a different key
+                    print(f"[GSV] 403 on image download, trying different key...")
+                    new_key = await self._get_api_key()
+                    if new_key and new_key != api_key:
+                        params["key"] = new_key
+                        await gsv_key_manager.throttle()
+                        response = await client.get(self.base_url, params=params)
+                        await gsv_key_manager.record_request(
+                            new_key,
+                            success=response.status_code == 200,
+                            status_code=response.status_code
+                        )
+                
+                if response.status_code != 200:
+                    return None
+                
+                return (response.content, capture_date)
+            except Exception as e:
+                print(f"[GSV] Error downloading image: {e}")
                 return None
-            
-            return (response.content, capture_date)
     
     async def download_all_headings(
         self,
@@ -136,17 +211,47 @@ class GSVDownloader:
         pano_id = metadata.get("pano_id")
         
         for heading in HEADINGS:
+            # Get API key for this request
+            api_key = await self._get_api_key()
+            if not api_key:
+                print(f"[GSV] No API keys available, stopping download for {identifier}")
+                break
+            
             params = {
                 "size": "640x480",
                 "location": f"{latitude},{longitude}",
                 "heading": heading,
                 "pitch": 0,
-                "key": self.api_key
+                "key": api_key
             }
             
             try:
+                # Apply rate limiting
+                await gsv_key_manager.throttle()
+                
                 async with httpx.AsyncClient(timeout=30.0) as client:
                     response = await client.get(self.base_url, params=params)
+                    
+                    # Record the request
+                    await gsv_key_manager.record_request(
+                        api_key,
+                        success=response.status_code == 200,
+                        status_code=response.status_code
+                    )
+                    
+                    # Handle 403 - try with different key
+                    if response.status_code == 403:
+                        print(f"[GSV] 403 for {identifier} heading {heading}, trying different key...")
+                        new_key = await self._get_api_key()
+                        if new_key and new_key != api_key:
+                            params["key"] = new_key
+                            await gsv_key_manager.throttle()
+                            response = await client.get(self.base_url, params=params)
+                            await gsv_key_manager.record_request(
+                                new_key,
+                                success=response.status_code == 200,
+                                status_code=response.status_code
+                            )
                     
                     if response.status_code != 200:
                         print(f"[GSV] Failed to download {identifier} heading {heading}: HTTP {response.status_code}")

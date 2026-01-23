@@ -30,7 +30,28 @@ class Settings(BaseSettings):
     GOOGLE_REDIRECT_URI: str = "http://localhost:8000/api/v1/auth/google/callback"
     
     # Google Street View API
+    # Single key (backwards compatible)
     GSV_API_KEY: str = ""
+    # Multiple keys for rotation (comma-separated, e.g., "key1,key2,key3")
+    GSV_API_KEYS: str = ""
+    # Rate limiting settings
+    GSV_REQUESTS_PER_MINUTE: int = 500  # Conservative limit (Google allows 30,000/min)
+    GSV_DAILY_LIMIT_PER_KEY: int = 25000  # Google's daily limit for unsigned requests
+    
+    @property
+    def gsv_api_keys_list(self) -> List[str]:
+        """Get list of all GSV API keys (combines single key and multiple keys)."""
+        keys = []
+        # Add single key if set
+        if self.GSV_API_KEY:
+            keys.append(self.GSV_API_KEY)
+        # Add multiple keys if set
+        if self.GSV_API_KEYS:
+            for key in self.GSV_API_KEYS.split(","):
+                key = key.strip()
+                if key and key not in keys:
+                    keys.append(key)
+        return keys
     
     # Google Cloud Storage
     GCS_BUCKET_NAME: str = "labelling-images"

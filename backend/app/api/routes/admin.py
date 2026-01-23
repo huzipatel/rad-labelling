@@ -325,6 +325,41 @@ async def notify_managers(
     }
 
 
+@router.get("/gsv-keys-status")
+async def gsv_keys_status(
+    current_user: User = Depends(require_admin)
+):
+    """Get status of all GSV API keys including usage and rate limit status."""
+    from app.services.gsv_key_manager import gsv_key_manager
+    
+    return gsv_key_manager.get_status()
+
+
+@router.post("/gsv-keys-reset/{key_prefix}")
+async def reset_gsv_key(
+    key_prefix: str,
+    current_user: User = Depends(require_admin)
+):
+    """Force reset a GSV API key's rate limit status."""
+    from app.services.gsv_key_manager import gsv_key_manager
+    
+    if gsv_key_manager.force_reset_key(key_prefix):
+        return {"message": f"Key {key_prefix}... has been reset"}
+    else:
+        raise HTTPException(status_code=404, detail=f"Key starting with {key_prefix} not found")
+
+
+@router.post("/gsv-keys-reload")
+async def reload_gsv_keys(
+    current_user: User = Depends(require_admin)
+):
+    """Reload GSV API keys from configuration."""
+    from app.services.gsv_key_manager import gsv_key_manager
+    
+    gsv_key_manager.reload_keys()
+    return gsv_key_manager.get_status()
+
+
 @router.get("/gsv-diagnostic")
 async def gsv_diagnostic(
     current_user: User = Depends(require_admin)
