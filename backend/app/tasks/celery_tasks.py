@@ -164,10 +164,25 @@ def download_task_images_celery(self, task_id: str, download_log_id: str = None)
                 # Initialize downloader
                 downloader = GSVDownloader()
                 
-                images_downloaded = 0
+                # Count EXISTING images in database first (for accurate totals)
+                from sqlalchemy import func
+                location_ids = [loc.id for loc in locations]
+                existing_count_result = await db.execute(
+                    select(func.count(GSVImage.id)).where(GSVImage.location_id.in_(location_ids))
+                )
+                existing_images_count = existing_count_result.scalar() or 0
+                
+                # Start with existing count so we don't lose progress
+                images_downloaded = existing_images_count
+                new_downloads = 0
                 failed_downloads = 0
                 skipped_existing = 0
                 processed = 0
+                
+                # Update task with accurate current count immediately
+                task.images_downloaded = images_downloaded
+                await db.commit()
+                print(f"[Celery GSV Download] Starting with {existing_images_count} existing images")
                 
                 for location in locations:
                     processed += 1
@@ -184,6 +199,7 @@ def download_task_images_celery(self, task_id: str, download_log_id: str = None)
                     if existing_images:
                         skipped_existing += len(existing_images)
                         download_log.skipped_existing = skipped_existing
+                        # Don't continue - we already counted these in images_downloaded
                         continue
                     
                     try:
@@ -199,7 +215,8 @@ def download_task_images_celery(self, task_id: str, download_log_id: str = None)
                             council=location_council
                         )
                         images_downloaded += downloaded
-                        download_log.successful_downloads += downloaded
+                        new_downloads += downloaded
+                        download_log.successful_downloads = new_downloads
                         
                     except Exception as e:
                         print(f"[Celery GSV Download] Error for {location.identifier}: {e}")
@@ -240,11 +257,12 @@ def download_task_images_celery(self, task_id: str, download_log_id: str = None)
                 
                 await db.commit()
                 
-                print(f"[Celery GSV Download] Complete! {images_downloaded} images, {skipped_existing} skipped, {failed_downloads} failed")
+                print(f"[Celery GSV Download] Complete! Total: {images_downloaded} images ({new_downloads} new, {skipped_existing} previously existed), {failed_downloads} failed")
                 
                 return {
                     "task_id": task_id,
                     "images_downloaded": images_downloaded,
+                    "new_downloads": new_downloads,
                     "skipped_existing": skipped_existing,
                     "failed_downloads": failed_downloads,
                     "total_locations": total_locations

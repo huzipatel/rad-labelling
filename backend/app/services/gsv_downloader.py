@@ -52,9 +52,6 @@ class GSVDownloader:
             "key": api_key
         }
         
-        # Apply rate limiting
-        await gsv_key_manager.throttle()
-        
         async with httpx.AsyncClient(timeout=30.0) as client:
             try:
                 response = await client.get(self.metadata_url, params=params)
@@ -68,11 +65,9 @@ class GSVDownloader:
                 
                 if response.status_code == 403:
                     # Try with a different key
-                    print(f"[GSV] 403 on metadata, trying different key...")
                     new_key = await self._get_api_key()
                     if new_key and new_key != api_key:
                         params["key"] = new_key
-                        await gsv_key_manager.throttle()
                         response = await client.get(self.metadata_url, params=params)
                         await gsv_key_manager.record_request(
                             new_key,
@@ -132,9 +127,6 @@ class GSVDownloader:
             "key": api_key
         }
         
-        # Apply rate limiting
-        await gsv_key_manager.throttle()
-        
         async with httpx.AsyncClient(timeout=30.0) as client:
             try:
                 response = await client.get(self.base_url, params=params)
@@ -148,11 +140,9 @@ class GSVDownloader:
                 
                 if response.status_code == 403:
                     # Try with a different key
-                    print(f"[GSV] 403 on image download, trying different key...")
                     new_key = await self._get_api_key()
                     if new_key and new_key != api_key:
                         params["key"] = new_key
-                        await gsv_key_manager.throttle()
                         response = await client.get(self.base_url, params=params)
                         await gsv_key_manager.record_request(
                             new_key,
@@ -226,9 +216,6 @@ class GSVDownloader:
             }
             
             try:
-                # Apply rate limiting
-                await gsv_key_manager.throttle()
-                
                 async with httpx.AsyncClient(timeout=30.0) as client:
                     response = await client.get(self.base_url, params=params)
                     
@@ -241,11 +228,9 @@ class GSVDownloader:
                     
                     # Handle 403 - try with different key
                     if response.status_code == 403:
-                        print(f"[GSV] 403 for {identifier} heading {heading}, trying different key...")
                         new_key = await self._get_api_key()
                         if new_key and new_key != api_key:
                             params["key"] = new_key
-                            await gsv_key_manager.throttle()
                             response = await client.get(self.base_url, params=params)
                             await gsv_key_manager.record_request(
                                 new_key,

@@ -215,14 +215,15 @@ class GSVKeyManager:
     
     async def throttle(self):
         """
-        Apply rate limiting delay between requests.
+        Apply minimal delay between requests.
         
-        This ensures we don't exceed Google's per-minute limits.
+        With multiple keys, we can be very aggressive.
+        Google allows 30,000 requests/min per key.
         """
-        # Calculate delay based on requests per minute limit
-        # With 500 requests/min target, that's about 120ms between requests
-        delay = 60.0 / settings.GSV_REQUESTS_PER_MINUTE
-        await asyncio.sleep(delay)
+        # Minimal delay - just enough to not hammer the API
+        delay = settings.GSV_MIN_DELAY_MS / 1000.0  # Convert ms to seconds
+        if delay > 0:
+            await asyncio.sleep(delay)
     
     def force_reset_key(self, key_prefix: str):
         """Force reset a key's rate limit status (admin function)."""

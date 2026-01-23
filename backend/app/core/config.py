@@ -34,9 +34,10 @@ class Settings(BaseSettings):
     GSV_API_KEY: str = ""
     # Multiple keys for rotation (comma-separated, e.g., "key1,key2,key3")
     GSV_API_KEYS: str = ""
-    # Rate limiting settings
-    GSV_REQUESTS_PER_MINUTE: int = 500  # Conservative limit (Google allows 30,000/min)
+    # Rate limiting settings - Google allows 30,000/min per key
+    GSV_REQUESTS_PER_MINUTE: int = 5000  # Per key limit (conservative vs Google's 30k)
     GSV_DAILY_LIMIT_PER_KEY: int = 25000  # Google's daily limit for unsigned requests
+    GSV_MIN_DELAY_MS: int = 10  # Minimum delay between requests in milliseconds
     
     @property
     def gsv_api_keys_list(self) -> List[str]:
