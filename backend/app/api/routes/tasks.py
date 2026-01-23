@@ -1283,6 +1283,111 @@ async def trigger_all_image_downloads(
     }
 
 
+@router.post("/pause-all-downloads")
+async def pause_all_downloads(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_manager)
+):
+    """Pause all currently downloading tasks."""
+    from app.models.download_log import DownloadLog
+    
+    # Get all tasks that are currently downloading
+    result = await db.execute(
+        select(Task).where(Task.status == "downloading")
+    )
+    downloading_tasks = result.scalars().all()
+    
+    if not downloading_tasks:
+        return {
+            "message": "No downloads currently in progress",
+            "tasks_paused": 0
+        }
+    
+    paused_count = 0
+    for task in downloading_tasks:
+        # Mark task as paused
+        task.status = "paused"
+        
+        # Set pause flag for the Celery worker
+        _paused_downloads[str(task.id)] = True
+        
+        # Update download logs
+        log_result = await db.execute(
+            select(DownloadLog)
+            .where(DownloadLog.task_id == task.id, DownloadLog.status == "in_progress")
+        )
+        for log in log_result.scalars().all():
+            log.status = "paused"
+        
+        paused_count += 1
+    
+    await db.commit()
+    
+    print(f"[Pause All] Paused {paused_count} downloading tasks")
+    
+    return {
+        "message": f"Paused {paused_count} downloads",
+        "tasks_paused": paused_count
+    }
+
+
+@router.post("/resume-all-downloads")
+async def resume_all_downloads(
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_manager)
+):
+    """Resume all paused downloads."""
+    from app.models.download_log import DownloadLog
+    
+    # Get all paused tasks
+    result = await db.execute(
+        select(Task).where(Task.status == "paused")
+    )
+    paused_tasks = result.scalars().all()
+    
+    if not paused_tasks:
+        return {
+            "message": "No paused downloads to resume",
+            "tasks_resumed": 0
+        }
+    
+    resumed_count = 0
+    for task in paused_tasks:
+        # Clear pause flag
+        _paused_downloads.pop(str(task.id), None)
+        _cancelled_downloads.pop(str(task.id), None)
+        
+        # Update task status
+        task.status = "downloading"
+        
+        # Create new download log
+        download_log = DownloadLog(
+            task_id=task.id,
+            status="pending",
+            total_locations=task.total_locations
+        )
+        db.add(download_log)
+        await db.flush()
+        
+        # Queue the download
+        try:
+            from app.tasks.celery_tasks import download_task_images_celery
+            download_task_images_celery.delay(str(task.id), str(download_log.id))
+            resumed_count += 1
+        except Exception as e:
+            print(f"Failed to resume download for task {task.id}: {e}")
+    
+    await db.commit()
+    
+    print(f"[Resume All] Resumed {resumed_count} paused downloads")
+    
+    return {
+        "message": f"Resumed {resumed_count} downloads",
+        "tasks_resumed": resumed_count
+    }
+
+
 @router.post("/{task_id}/download-images")
 async def trigger_image_download(
     task_id: uuid.UUID,

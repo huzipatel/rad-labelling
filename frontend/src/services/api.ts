@@ -103,6 +103,10 @@ export const tasksApi = {
     api.delete('/tasks/bulk-delete', { data: taskIds }),
   downloadAllImages: () =>
     api.post('/tasks/download-all-images'),
+  pauseAllDownloads: () =>
+    api.post('/tasks/pause-all-downloads'),
+  resumeAllDownloads: () =>
+    api.post('/tasks/resume-all-downloads'),
   downloadTaskImages: (taskId: string) =>
     api.post(`/tasks/${taskId}/download-images`),
   

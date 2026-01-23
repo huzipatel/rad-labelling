@@ -298,6 +298,32 @@ export default function ManagerDashboard() {
     }
   }
 
+  const handlePauseAllDownloads = async () => {
+    if (!confirm('This will pause all currently downloading tasks. Continue?')) return
+    
+    try {
+      const response = await tasksApi.pauseAllDownloads()
+      alert(response.data.message)
+      loadData()
+    } catch (error: any) {
+      console.error('Failed to pause downloads:', error)
+      alert(error.response?.data?.detail || 'Failed to pause downloads')
+    }
+  }
+
+  const handleResumeAllDownloads = async () => {
+    if (!confirm('This will resume all paused downloads. Continue?')) return
+    
+    try {
+      const response = await tasksApi.resumeAllDownloads()
+      alert(response.data.message)
+      loadData()
+    } catch (error: any) {
+      console.error('Failed to resume downloads:', error)
+      alert(error.response?.data?.detail || 'Failed to resume downloads')
+    }
+  }
+
   // Task creation handlers
   const handleOpenCreateModal = () => {
     setCreateModalOpen(true)
@@ -887,6 +913,20 @@ export default function ManagerDashboard() {
               disabled={downloadingAllImages}
             >
               {downloadingAllImages ? 'Starting Downloads...' : '⬇️ Download All Images'}
+            </button>
+            <button 
+              className="govuk-button govuk-button--warning govuk-!-margin-right-2"
+              onClick={handlePauseAllDownloads}
+              title="Pause all currently downloading tasks"
+            >
+              ⏸️ Pause All
+            </button>
+            <button 
+              className="govuk-button govuk-button--secondary govuk-!-margin-right-2"
+              onClick={handleResumeAllDownloads}
+              title="Resume all paused downloads"
+            >
+              ▶️ Resume All
             </button>
             <button 
               className="govuk-button govuk-button--secondary govuk-!-margin-right-2"
