@@ -60,12 +60,17 @@ def download_task_images_celery(self, task_id: str, download_log_id: str = None)
     async def _download():
         print(f"[Celery GSV Download] Starting download for task {task_id}")
         
-        # Check GSV API key first
-        if not settings.GSV_API_KEY:
-            print(f"[Celery GSV Download] ERROR: GSV_API_KEY is not configured!")
-            return {"error": "GSV_API_KEY is not configured. Please set it in environment variables."}
+        # Check GSV API keys - either single key or comma-separated list
+        has_keys = settings.GSV_API_KEY or settings.GSV_API_KEYS
+        if not has_keys:
+            print(f"[Celery GSV Download] ERROR: No GSV API keys configured!")
+            return {"error": "GSV_API_KEY or GSV_API_KEYS must be set in environment variables."}
         
-        print(f"[Celery GSV Download] GSV_API_KEY configured: {settings.GSV_API_KEY[:8]}...")
+        if settings.GSV_API_KEY:
+            print(f"[Celery GSV Download] GSV_API_KEY configured: {settings.GSV_API_KEY[:8]}...")
+        if settings.GSV_API_KEYS:
+            key_count = len([k for k in settings.GSV_API_KEYS.split(",") if k.strip()])
+            print(f"[Celery GSV Download] GSV_API_KEYS configured with {key_count} keys")
         
         session_maker = get_celery_session_maker()
         async with session_maker() as db:
