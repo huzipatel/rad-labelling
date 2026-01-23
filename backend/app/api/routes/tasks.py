@@ -1897,18 +1897,23 @@ async def download_task_images(task_id: str, download_log_id: str = None):
                     await db.commit()
                 return
             
-            # Check GSV API key
-            if not settings.GSV_API_KEY:
-                add_log_message("GSV_API_KEY is not configured!", "error")
+            # Check GSV API keys - either single key or comma-separated list
+            has_keys = settings.GSV_API_KEY or settings.GSV_API_KEYS
+            if not has_keys:
+                add_log_message("No GSV API keys configured!", "error")
                 if download_log:
                     download_log.status = "failed"
-                    download_log.last_error = "GSV_API_KEY is not configured. Please set it in the environment."
+                    download_log.last_error = "GSV_API_KEY or GSV_API_KEYS must be set in environment."
                     await db.commit()
                 task.status = "pending"  # Revert status
                 await db.commit()
                 return
             
-            add_log_message(f"GSV API Key configured: {settings.GSV_API_KEY[:10]}...")
+            if settings.GSV_API_KEY:
+                add_log_message(f"GSV API Key configured: {settings.GSV_API_KEY[:10]}...")
+            if settings.GSV_API_KEYS:
+                key_count = len([k for k in settings.GSV_API_KEYS.split(",") if k.strip()])
+                add_log_message(f"GSV API Keys configured: {key_count} keys")
             
             if download_log:
                 download_log.status = "in_progress"
