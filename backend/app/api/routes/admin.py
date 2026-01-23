@@ -324,3 +324,108 @@ async def notify_managers(
         "sent_count": sent_count
     }
 
+
+@router.get("/gsv-diagnostic")
+async def gsv_diagnostic(
+    current_user: User = Depends(require_admin)
+):
+    """
+    Diagnose Google Street View API configuration and test connectivity.
+    
+    This helps troubleshoot 403 errors and API issues.
+    """
+    import httpx
+    from app.core.config import settings
+    
+    results = {
+        "api_key_configured": False,
+        "api_key_prefix": None,
+        "api_key_length": 0,
+        "metadata_test": None,
+        "image_test": None,
+        "recommendations": []
+    }
+    
+    # Check API key
+    api_key = settings.GSV_API_KEY
+    if api_key:
+        results["api_key_configured"] = True
+        results["api_key_prefix"] = api_key[:8] + "..." if len(api_key) > 8 else api_key
+        results["api_key_length"] = len(api_key)
+    else:
+        results["recommendations"].append("GSV_API_KEY environment variable is not set!")
+        return results
+    
+    # Test location (London, UK - should have Street View coverage)
+    test_lat = 51.5074
+    test_lng = -0.1278
+    
+    # Test metadata endpoint
+    metadata_url = "https://maps.googleapis.com/maps/api/streetview/metadata"
+    metadata_params = {
+        "location": f"{test_lat},{test_lng}",
+        "key": api_key
+    }
+    
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(metadata_url, params=metadata_params)
+            results["metadata_test"] = {
+                "status_code": response.status_code,
+                "response": response.json() if response.status_code == 200 else response.text[:500]
+            }
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("status") == "OK":
+                    results["metadata_test"]["success"] = True
+                else:
+                    results["metadata_test"]["success"] = False
+                    results["recommendations"].append(f"Metadata API returned status: {data.get('status')}. Check if Street View Static API is enabled.")
+            elif response.status_code == 403:
+                results["recommendations"].append("403 Forbidden - Check API key restrictions in Google Cloud Console. Remove any IP/referrer restrictions or add Render's IPs.")
+            elif response.status_code == 400:
+                results["recommendations"].append("400 Bad Request - The API key format may be invalid.")
+    except Exception as e:
+        results["metadata_test"] = {"error": str(e)}
+        results["recommendations"].append(f"Failed to connect to Google API: {str(e)}")
+    
+    # Test image endpoint
+    image_url = "https://maps.googleapis.com/maps/api/streetview"
+    image_params = {
+        "size": "100x100",
+        "location": f"{test_lat},{test_lng}",
+        "heading": 0,
+        "key": api_key
+    }
+    
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(image_url, params=image_params)
+            results["image_test"] = {
+                "status_code": response.status_code,
+                "content_type": response.headers.get("content-type"),
+                "content_length": len(response.content)
+            }
+            
+            if response.status_code == 200 and "image" in response.headers.get("content-type", ""):
+                results["image_test"]["success"] = True
+            else:
+                results["image_test"]["success"] = False
+                if response.status_code == 403:
+                    results["recommendations"].append("Image API returned 403. API key is being rejected. Check:")
+                    results["recommendations"].append("1. Go to Google Cloud Console > APIs & Services > Credentials")
+                    results["recommendations"].append("2. Find your API key and click on it")
+                    results["recommendations"].append("3. Under 'Application restrictions', set to 'None' or add Render's IP ranges")
+                    results["recommendations"].append("4. Under 'API restrictions', ensure 'Street View Static API' is allowed")
+    except Exception as e:
+        results["image_test"] = {"error": str(e)}
+    
+    # Add general recommendations
+    if not results.get("recommendations"):
+        if results.get("metadata_test", {}).get("success") and results.get("image_test", {}).get("success"):
+            results["recommendations"].append("✅ GSV API is working correctly!")
+        else:
+            results["recommendations"].append("Check Google Cloud Console for more details on the errors.")
+    
+    return results
