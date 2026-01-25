@@ -81,6 +81,10 @@ export const tasksApi = {
     api.post(`/tasks/${taskId}/start`),
   getStats: (locationTypeId?: string) =>
     api.get('/tasks/stats', { params: { location_type_id: locationTypeId } }),
+  getGlobalImageStats: () =>
+    api.get('/tasks/stats/images'),
+  syncImageCounts: () =>
+    api.post('/tasks/stats/sync-image-counts'),
   
   // Task creation
   getGroupableFields: (locationTypeId: string) =>

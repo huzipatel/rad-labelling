@@ -159,6 +159,20 @@ export default function ManagerDashboard() {
   const [sampleName, setSampleName] = useState('')
   const [loadingTasksWithImages, setLoadingTasksWithImages] = useState(false)
   const [creatingSample, setCreatingSample] = useState(false)
+  
+  // Global image stats (accurate from database)
+  const [globalImageStats, setGlobalImageStats] = useState<{
+    total_locations: number
+    total_images_expected: number
+    total_images_downloaded: number
+    download_percentage: number
+    locations_with_images: number
+    locations_without_images: number
+    tasks_downloading: number
+    tasks_ready: number
+    tasks_pending: number
+  } | null>(null)
+  const [syncingCounts, setSyncingCounts] = useState(false)
 
   useEffect(() => {
     loadData()
@@ -208,6 +222,14 @@ export default function ManagerDashboard() {
       setStats(statsRes.data)
     } catch (error) {
       console.error('Failed to load stats:', error)
+    }
+
+    // Load accurate global image stats
+    try {
+      const globalStatsRes = await tasksApi.getGlobalImageStats()
+      setGlobalImageStats(globalStatsRes.data)
+    } catch (error) {
+      console.error('Failed to load global image stats:', error)
     }
 
     try {
@@ -796,12 +818,26 @@ export default function ManagerDashboard() {
     }
   }, [logsRefreshInterval])
 
-  // Calculate aggregate image stats
-  const totalImagesAcrossTasks = tasks.reduce((sum, t) => sum + (t.total_images || 0), 0)
-  const downloadedImagesAcrossTasks = tasks.reduce((sum, t) => sum + (t.images_downloaded || 0), 0)
-  const overallDownloadProgress = totalImagesAcrossTasks > 0 
-    ? Math.round((downloadedImagesAcrossTasks / totalImagesAcrossTasks) * 100) 
-    : 0
+  // Use accurate global image stats from database (not calculated from task sums)
+  const totalImagesAcrossTasks = globalImageStats?.total_images_expected || 0
+  const downloadedImagesAcrossTasks = globalImageStats?.total_images_downloaded || 0
+  const overallDownloadProgress = globalImageStats?.download_percentage || 0
+  
+  // Handler to sync image counts
+  const handleSyncImageCounts = async () => {
+    if (!confirm('This will recalculate all task image counts from the database. Continue?')) return
+    setSyncingCounts(true)
+    try {
+      const response = await tasksApi.syncImageCounts()
+      alert(`Synced: ${response.data.tasks_updated} tasks updated`)
+      loadData() // Reload to show updated counts
+    } catch (error) {
+      console.error('Failed to sync image counts:', error)
+      alert('Failed to sync image counts')
+    } finally {
+      setSyncingCounts(false)
+    }
+  }
 
   if (loading) return <Loading />
 
@@ -834,7 +870,7 @@ export default function ManagerDashboard() {
           </div>
           <div className="stat-card">
             <span className="stat-card__value" style={{ color: overallDownloadProgress === 100 ? '#10b981' : '#6b7280' }}>
-              {overallDownloadProgress}%
+              {overallDownloadProgress.toFixed(1)}%
             </span>
             <span className="stat-card__label">Images Downloaded</span>
             <div style={{ marginTop: '8px' }}>
@@ -849,6 +885,49 @@ export default function ManagerDashboard() {
               </span>
             </div>
           </div>
+        </div>
+      )}
+      
+      {/* Global Location Stats */}
+      {globalImageStats && (
+        <div style={{ 
+          background: '#f8fafc', 
+          padding: '16px 20px', 
+          borderRadius: '8px', 
+          marginBottom: '24px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '24px'
+        }}>
+          <div style={{ display: 'flex', gap: '32px', alignItems: 'center' }}>
+            <div>
+              <span style={{ fontWeight: 600, color: '#1e293b' }}>
+                {globalImageStats.total_locations.toLocaleString()}
+              </span>
+              <span style={{ color: '#64748b', marginLeft: '6px' }}>total locations</span>
+            </div>
+            <div>
+              <span style={{ fontWeight: 600, color: '#10b981' }}>
+                {globalImageStats.locations_with_images.toLocaleString()}
+              </span>
+              <span style={{ color: '#64748b', marginLeft: '6px' }}>with images</span>
+            </div>
+            <div>
+              <span style={{ fontWeight: 600, color: '#f59e0b' }}>
+                {globalImageStats.locations_without_images.toLocaleString()}
+              </span>
+              <span style={{ color: '#64748b', marginLeft: '6px' }}>without images</span>
+            </div>
+          </div>
+          <button
+            className="govuk-button govuk-button--secondary"
+            style={{ margin: 0, fontSize: '14px', padding: '8px 16px' }}
+            onClick={handleSyncImageCounts}
+            disabled={syncingCounts}
+          >
+            {syncingCounts ? 'Syncing...' : '🔄 Sync Counts'}
+          </button>
         </div>
       )}
 

@@ -983,6 +983,153 @@ async def get_task_stats(
     return TaskStats(**stats)
 
 
+class GlobalImageStats(BaseModel):
+    """Global image statistics from database."""
+    total_locations: int
+    total_images_expected: int  # total_locations * 4
+    total_images_downloaded: int  # actual count from gsv_images table
+    download_percentage: float
+    locations_with_images: int
+    locations_without_images: int
+    tasks_downloading: int
+    tasks_ready: int
+    tasks_pending: int
+
+
+@router.get("/stats/images", response_model=GlobalImageStats)
+async def get_global_image_stats(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_manager)
+):
+    """
+    Get accurate global image statistics by counting directly from database.
+    
+    This provides consistent, accurate numbers that don't jump around.
+    """
+    from app.models.gsv_image import GSVImage
+    
+    # Count total locations
+    total_locations_result = await db.execute(select(func.count(Location.id)))
+    total_locations = total_locations_result.scalar() or 0
+    
+    # Count actual images in database
+    total_images_result = await db.execute(select(func.count(GSVImage.id)))
+    total_images_downloaded = total_images_result.scalar() or 0
+    
+    # Count locations that have at least one image
+    locations_with_images_result = await db.execute(
+        select(func.count(func.distinct(GSVImage.location_id)))
+    )
+    locations_with_images = locations_with_images_result.scalar() or 0
+    
+    # Count tasks by status
+    downloading_result = await db.execute(
+        select(func.count(Task.id)).where(Task.status == "downloading")
+    )
+    tasks_downloading = downloading_result.scalar() or 0
+    
+    ready_result = await db.execute(
+        select(func.count(Task.id)).where(Task.status == "ready")
+    )
+    tasks_ready = ready_result.scalar() or 0
+    
+    pending_result = await db.execute(
+        select(func.count(Task.id)).where(Task.status == "pending")
+    )
+    tasks_pending = pending_result.scalar() or 0
+    
+    # Calculate expected images (4 per location)
+    total_images_expected = total_locations * 4
+    
+    # Calculate percentage
+    download_percentage = (total_images_downloaded / total_images_expected * 100) if total_images_expected > 0 else 0
+    
+    return GlobalImageStats(
+        total_locations=total_locations,
+        total_images_expected=total_images_expected,
+        total_images_downloaded=total_images_downloaded,
+        download_percentage=round(download_percentage, 2),
+        locations_with_images=locations_with_images,
+        locations_without_images=total_locations - locations_with_images,
+        tasks_downloading=tasks_downloading,
+        tasks_ready=tasks_ready,
+        tasks_pending=tasks_pending
+    )
+
+
+@router.post("/stats/sync-image-counts")
+async def sync_task_image_counts(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_manager)
+):
+    """
+    Sync all task image counts with actual database values.
+    
+    This recalculates images_downloaded for each task based on what's 
+    actually in the gsv_images table, ensuring accuracy.
+    """
+    from app.models.gsv_image import GSVImage
+    
+    # Get all tasks
+    result = await db.execute(select(Task))
+    tasks = result.scalars().all()
+    
+    updated_count = 0
+    
+    for task in tasks:
+        # Build location query for this task (same logic as download)
+        base_query = select(Location.id).where(Location.location_type_id == task.location_type_id)
+        
+        if task.group_field and task.group_field.startswith("original_"):
+            original_key = task.group_field.replace("original_", "")
+            location_query = base_query.where(
+                text(f"original_data->>'{original_key}' = :group_value")
+            ).params(group_value=task.group_value)
+        elif task.group_field == "council":
+            location_query = base_query.where(Location.council == task.group_value)
+        elif task.group_field == "combined_authority":
+            location_query = base_query.where(Location.combined_authority == task.group_value)
+        elif task.group_field == "road_classification":
+            location_query = base_query.where(Location.road_classification == task.group_value)
+        elif task.council:
+            location_query = base_query.where(Location.council == task.council)
+        else:
+            location_query = base_query
+        
+        # Get location IDs for this task
+        loc_result = await db.execute(location_query)
+        location_ids = [row[0] for row in loc_result.fetchall()]
+        
+        if not location_ids:
+            continue
+        
+        # Count actual images for these locations
+        img_count_result = await db.execute(
+            select(func.count(GSVImage.id)).where(GSVImage.location_id.in_(location_ids))
+        )
+        actual_image_count = img_count_result.scalar() or 0
+        
+        # Update task if count differs
+        if task.images_downloaded != actual_image_count:
+            old_count = task.images_downloaded
+            task.images_downloaded = actual_image_count
+            
+            # Also update total_images to be accurate (4 per location)
+            task.total_images = len(location_ids) * 4
+            task.total_locations = len(location_ids)
+            
+            updated_count += 1
+            print(f"[Sync] Task {task.id}: {old_count} -> {actual_image_count} images")
+    
+    await db.commit()
+    
+    return {
+        "message": f"Synced image counts for {updated_count} tasks",
+        "tasks_updated": updated_count,
+        "total_tasks": len(tasks)
+    }
+
+
 @router.get("/{task_id}", response_model=TaskResponse)
 async def get_task(
     task_id: uuid.UUID,
