@@ -423,8 +423,8 @@ export default function AdminPage() {
 
       {/* Tab Navigation */}
       <div className="govuk-tabs" data-module="govuk-tabs">
-        <ul className="govuk-tabs__list">
-          <li className="govuk-tabs__list-item">
+        <ul className="govuk-tabs__list" style={{ display: 'flex', flexWrap: 'wrap', gap: '0' }}>
+          <li className="govuk-tabs__list-item" style={{ marginRight: '20px' }}>
             <a 
               className={`govuk-tabs__tab ${activeTab === 'users' ? 'govuk-tabs__tab--selected' : ''}`}
               href="#users"
@@ -433,7 +433,7 @@ export default function AdminPage() {
               User Management
             </a>
           </li>
-          <li className="govuk-tabs__list-item">
+          <li className="govuk-tabs__list-item" style={{ marginRight: '20px' }}>
             <a 
               className={`govuk-tabs__tab ${activeTab === 'invitations' ? 'govuk-tabs__tab--selected' : ''}`}
               href="#invitations"
@@ -442,11 +442,12 @@ export default function AdminPage() {
               Invitations
             </a>
           </li>
-          <li className="govuk-tabs__list-item">
+          <li className="govuk-tabs__list-item" style={{ marginRight: '20px' }}>
             <a 
               className={`govuk-tabs__tab ${activeTab === 'gsv-keys' ? 'govuk-tabs__tab--selected' : ''}`}
               href="#gsv-keys"
               onClick={(e) => { e.preventDefault(); setActiveTab('gsv-keys'); }}
+              style={{ whiteSpace: 'nowrap' }}
             >
               🔑 GSV API Keys
             </a>
