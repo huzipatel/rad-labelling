@@ -189,11 +189,12 @@ def download_task_images_celery(self, task_id: str, download_log_id: str = None)
                 await db.commit()
                 print(f"[Celery GSV Download] Starting with {existing_images_count} existing images")
                 
-                for location in locations:
-                    processed += 1
-                    download_log.processed_locations = processed
-                    download_log.current_location_id = location.id
-                    download_log.current_location_identifier = location.identifier
+                # Process locations in parallel batches for maximum speed
+                BATCH_SIZE = 10  # Process 10 locations concurrently
+                
+                async def process_single_location(location, loc_index):
+                    """Process a single location - called in parallel."""
+                    nonlocal images_downloaded, new_downloads, failed_downloads, skipped_existing
                     
                     # Check if images already exist for this location
                     existing_result = await db.execute(
@@ -203,9 +204,7 @@ def download_task_images_celery(self, task_id: str, download_log_id: str = None)
                     
                     if existing_images:
                         skipped_existing += len(existing_images)
-                        download_log.skipped_existing = skipped_existing
-                        # Don't continue - we already counted these in images_downloaded
-                        continue
+                        return 0
                     
                     try:
                         location_council = location.council or task.group_value or "unspecified"
@@ -219,16 +218,38 @@ def download_task_images_celery(self, task_id: str, download_log_id: str = None)
                             location_type=location_type_name,
                             council=location_council
                         )
-                        images_downloaded += downloaded
-                        new_downloads += downloaded
-                        download_log.successful_downloads = new_downloads
+                        return downloaded
                         
                     except Exception as e:
                         print(f"[Celery GSV Download] Error for {location.identifier}: {e}")
                         failed_downloads += 1
-                        download_log.failed_downloads = failed_downloads
-                        download_log.last_error = str(e)
-                        download_log.error_count += 1
+                        return 0
+                
+                # Process in batches
+                for batch_start in range(0, len(locations), BATCH_SIZE):
+                    batch_end = min(batch_start + BATCH_SIZE, len(locations))
+                    batch = locations[batch_start:batch_end]
+                    
+                    # Process batch in parallel
+                    tasks_list = [
+                        process_single_location(loc, batch_start + i) 
+                        for i, loc in enumerate(batch)
+                    ]
+                    results = await asyncio.gather(*tasks_list, return_exceptions=True)
+                    
+                    # Count results
+                    for result in results:
+                        if isinstance(result, int):
+                            images_downloaded += result
+                            new_downloads += result
+                        elif isinstance(result, Exception):
+                            failed_downloads += 1
+                    
+                    processed = batch_end
+                    download_log.processed_locations = processed
+                    download_log.successful_downloads = new_downloads
+                    download_log.skipped_existing = skipped_existing
+                    download_log.failed_downloads = failed_downloads
                     
                     # Update progress
                     task.images_downloaded = images_downloaded
@@ -246,9 +267,8 @@ def download_task_images_celery(self, task_id: str, download_log_id: str = None)
                         }
                     )
                     
-                    # Log progress every 10 locations
-                    if processed % 10 == 0:
-                        print(f"[Celery GSV Download] Progress: {processed}/{total_locations}, {images_downloaded} images")
+                    # Log progress every batch
+                    print(f"[Celery GSV Download] Batch complete: {processed}/{total_locations} locations, {images_downloaded} images ({percent}%)")
                 
                 # Mark task as ready
                 task.images_downloaded = images_downloaded
