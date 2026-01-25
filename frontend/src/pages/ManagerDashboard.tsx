@@ -224,13 +224,10 @@ export default function ManagerDashboard() {
       console.error('Failed to load stats:', error)
     }
 
-    // Load accurate global image stats
-    try {
-      const globalStatsRes = await tasksApi.getGlobalImageStats()
-      setGlobalImageStats(globalStatsRes.data)
-    } catch (error) {
-      console.error('Failed to load global image stats:', error)
-    }
+    // Load global image stats in background (don't block main loading)
+    tasksApi.getGlobalImageStats()
+      .then(res => setGlobalImageStats(res.data))
+      .catch(err => console.error('Failed to load global image stats:', err))
 
     try {
       const tasksRes = await tasksApi.getAllTasks({
