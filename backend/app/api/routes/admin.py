@@ -464,3 +464,232 @@ async def gsv_diagnostic(
             results["recommendations"].append("Check Google Cloud Console for more details on the errors.")
     
     return results
+
+
+# ============================================
+# GSV API Key Management
+# ============================================
+
+class GSVAccountCreate(BaseModel):
+    """Create a GSV Google account entry."""
+    email: str
+    billing_id: str = ""
+    target_projects: int = 30
+
+
+class GSVAccountResponse(BaseModel):
+    """GSV account response."""
+    id: str
+    email: str
+    billing_id: str
+    target_projects: int
+    projects_created: int
+    keys_generated: int
+    created_at: datetime
+
+
+# In-memory storage for GSV accounts (in production, you'd use the database)
+# This is stored server-side for simplicity
+import json
+from pathlib import Path
+
+GSV_DATA_FILE = Path("gsv_accounts_data.json")
+
+
+def load_gsv_data():
+    """Load GSV accounts data."""
+    if GSV_DATA_FILE.exists():
+        try:
+            with open(GSV_DATA_FILE) as f:
+                return json.load(f)
+        except:
+            pass
+    return {"accounts": [], "all_keys": []}
+
+
+def save_gsv_data(data):
+    """Save GSV accounts data."""
+    with open(GSV_DATA_FILE, "w") as f:
+        json.dump(data, f, indent=2, default=str)
+
+
+@router.get("/gsv-accounts")
+async def get_gsv_accounts(
+    current_user: User = Depends(require_admin)
+):
+    """Get all GSV accounts and their keys."""
+    data = load_gsv_data()
+    
+    # Calculate stats
+    total_projects = sum(len(a.get("projects", [])) for a in data["accounts"])
+    total_keys = sum(1 for a in data["accounts"] for p in a.get("projects", []) if p.get("api_key"))
+    
+    return {
+        "accounts": data["accounts"],
+        "stats": {
+            "total_accounts": len(data["accounts"]),
+            "total_projects": total_projects,
+            "total_keys": total_keys,
+            "daily_capacity": total_keys * 25000,
+            "estimated_hours_for_1_7m": round(1700000 / (total_keys * 25000), 1) if total_keys > 0 else 0
+        }
+    }
+
+
+@router.post("/gsv-accounts")
+async def add_gsv_account(
+    account: GSVAccountCreate,
+    current_user: User = Depends(require_admin)
+):
+    """Add a new GSV Google account."""
+    data = load_gsv_data()
+    
+    # Check if account already exists
+    if any(a["email"] == account.email for a in data["accounts"]):
+        raise HTTPException(status_code=400, detail="Account already exists")
+    
+    new_account = {
+        "id": str(uuid.uuid4()),
+        "email": account.email,
+        "billing_id": account.billing_id,
+        "target_projects": account.target_projects,
+        "projects": [],
+        "created_at": datetime.utcnow().isoformat()
+    }
+    
+    data["accounts"].append(new_account)
+    save_gsv_data(data)
+    
+    return {"success": True, "account": new_account}
+
+
+@router.delete("/gsv-accounts/{account_id}")
+async def delete_gsv_account(
+    account_id: str,
+    current_user: User = Depends(require_admin)
+):
+    """Delete a GSV account entry."""
+    data = load_gsv_data()
+    
+    data["accounts"] = [a for a in data["accounts"] if a.get("id") != account_id]
+    save_gsv_data(data)
+    
+    return {"success": True}
+
+
+@router.post("/gsv-accounts/{account_id}/add-key")
+async def add_gsv_key_manually(
+    account_id: str,
+    key_data: dict,
+    current_user: User = Depends(require_admin)
+):
+    """Manually add an API key to an account."""
+    data = load_gsv_data()
+    
+    for account in data["accounts"]:
+        if account.get("id") == account_id:
+            if "projects" not in account:
+                account["projects"] = []
+            
+            account["projects"].append({
+                "project_id": key_data.get("project_id", f"manual-{len(account['projects']) + 1}"),
+                "api_key": key_data.get("api_key"),
+                "added_at": datetime.utcnow().isoformat()
+            })
+            
+            save_gsv_data(data)
+            return {"success": True}
+    
+    raise HTTPException(status_code=404, detail="Account not found")
+
+
+@router.post("/gsv-accounts/{account_id}/bulk-add-keys")
+async def bulk_add_gsv_keys(
+    account_id: str,
+    keys: dict,
+    current_user: User = Depends(require_admin)
+):
+    """Bulk add API keys to an account (comma-separated or newline-separated)."""
+    data = load_gsv_data()
+    
+    keys_text = keys.get("keys", "")
+    # Split by comma or newline
+    key_list = [k.strip() for k in keys_text.replace("\n", ",").split(",") if k.strip()]
+    
+    for account in data["accounts"]:
+        if account.get("id") == account_id:
+            if "projects" not in account:
+                account["projects"] = []
+            
+            added = 0
+            for i, key in enumerate(key_list):
+                # Check if key already exists
+                existing_keys = [p.get("api_key") for p in account["projects"]]
+                if key not in existing_keys:
+                    account["projects"].append({
+                        "project_id": f"imported-{len(account['projects']) + 1}",
+                        "api_key": key,
+                        "added_at": datetime.utcnow().isoformat()
+                    })
+                    added += 1
+            
+            save_gsv_data(data)
+            return {"success": True, "added": added, "total": len(account["projects"])}
+    
+    raise HTTPException(status_code=404, detail="Account not found")
+
+
+@router.get("/gsv-all-keys")
+async def get_all_gsv_keys(
+    current_user: User = Depends(require_admin)
+):
+    """Get all GSV API keys as a comma-separated string for Render."""
+    data = load_gsv_data()
+    
+    all_keys = []
+    for account in data["accounts"]:
+        for project in account.get("projects", []):
+            if project.get("api_key"):
+                all_keys.append(project["api_key"])
+    
+    return {
+        "keys_string": ",".join(all_keys),
+        "total_keys": len(all_keys),
+        "daily_capacity": len(all_keys) * 25000
+    }
+
+
+@router.post("/gsv-apply-keys")
+async def apply_gsv_keys_to_config(
+    current_user: User = Depends(require_admin)
+):
+    """
+    Apply all stored GSV keys to the running application config.
+    This updates the GSV_API_KEYS setting in memory.
+    """
+    from app.core.config import settings
+    
+    data = load_gsv_data()
+    
+    all_keys = []
+    for account in data["accounts"]:
+        for project in account.get("projects", []):
+            if project.get("api_key"):
+                all_keys.append(project["api_key"])
+    
+    if all_keys:
+        # Update settings (this affects the running instance)
+        settings.GSV_API_KEYS = ",".join(all_keys)
+        
+        # Reload the key manager
+        from app.services.gsv_key_manager import gsv_key_manager
+        gsv_key_manager._initialized = False
+        gsv_key_manager.__init__()
+        
+        return {
+            "success": True,
+            "keys_applied": len(all_keys),
+            "message": f"Applied {len(all_keys)} keys to the running application"
+        }
+    
+    return {"success": False, "message": "No keys to apply"}

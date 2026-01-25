@@ -291,6 +291,22 @@ export const adminApi = {
     api.get('/admin/stats'),
   notifyManagers: (message: string) =>
     api.post('/admin/notify-managers', null, { params: { message } }),
+  
+  // GSV API Key Management
+  getGsvAccounts: () =>
+    api.get('/admin/gsv-accounts'),
+  addGsvAccount: (data: { email: string; billing_id?: string; target_projects?: number }) =>
+    api.post('/admin/gsv-accounts', data),
+  deleteGsvAccount: (accountId: string) =>
+    api.delete(`/admin/gsv-accounts/${accountId}`),
+  addGsvKey: (accountId: string, data: { project_id?: string; api_key: string }) =>
+    api.post(`/admin/gsv-accounts/${accountId}/add-key`, data),
+  bulkAddGsvKeys: (accountId: string, keys: string) =>
+    api.post(`/admin/gsv-accounts/${accountId}/bulk-add-keys`, { keys }),
+  getAllGsvKeys: () =>
+    api.get('/admin/gsv-all-keys'),
+  applyGsvKeys: () =>
+    api.post('/admin/gsv-apply-keys'),
 }
 
 // Notifications API
