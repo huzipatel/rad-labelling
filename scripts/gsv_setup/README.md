@@ -1,6 +1,32 @@
 # Google Street View API Key Setup
 
-This system automates the creation of 70 Google Cloud projects with API keys for high-throughput Street View image downloads.
+This system automates the creation of multiple Google Cloud projects with API keys for high-throughput Street View image downloads.
+
+## 🚀 Web UI (Easiest Method)
+
+```bash
+cd scripts/gsv_setup
+pip install -r requirements.txt
+python web_ui.py
+```
+
+Then open http://localhost:5000 in your browser!
+
+The Web UI allows you to:
+- Manage multiple Google accounts
+- Create projects with one click
+- View all API keys in one place
+- Copy keys directly to clipboard
+
+## 📊 Capacity Calculator
+
+| Accounts | Projects | API Keys | Daily Capacity |
+|----------|----------|----------|----------------|
+| 1 | 30 | 30 | 750,000 images |
+| 3 | 90 | 90 | 2.25M images |
+| 6 | 180 | 180 | 4.5M images |
+
+For 1.7M images, 3 accounts (~9 hours) or 6 accounts (~5 hours) is recommended.
 
 ## Prerequisites
 
