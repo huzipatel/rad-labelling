@@ -124,19 +124,24 @@ export default function AdminPage() {
 
   const loadData = async () => {
     try {
-      const [usersRes, statsRes] = await Promise.all([
-        usersApi.getUsers({ page, page_size: 20, role: roleFilter || undefined, search: search || undefined }),
-        adminApi.getSystemStats(),
-      ])
-
-      setUsers(usersRes.data.users)
-      setTotal(usersRes.data.total)
+      const usersRes = await usersApi.getUsers({ page, page_size: 20, role: roleFilter || undefined, search: search || undefined })
+      setUsers(usersRes.data?.users || [])
+      setTotal(usersRes.data?.total || 0)
+    } catch (error) {
+      console.error('Failed to load users:', error)
+      setUsers([])
+      setTotal(0)
+    }
+    
+    try {
+      const statsRes = await adminApi.getSystemStats()
       setStats(statsRes.data)
     } catch (error) {
-      console.error('Failed to load data:', error)
-    } finally {
-      setLoading(false)
+      console.error('Failed to load stats:', error)
+      setStats(null)
     }
+    
+    setLoading(false)
   }
 
   const loadInvitations = async () => {
@@ -314,18 +319,24 @@ export default function AdminPage() {
   const loadGsvData = async () => {
     setGsvLoading(true)
     try {
-      const [accountsRes, keysRes] = await Promise.all([
-        adminApi.getGsvAccounts(),
-        adminApi.getAllGsvKeys()
-      ])
-      setGsvAccounts(accountsRes.data.accounts || [])
-      setGsvStats(accountsRes.data.stats)
-      setAllKeysString(keysRes.data.keys_string || '')
+      const accountsRes = await adminApi.getGsvAccounts()
+      setGsvAccounts(accountsRes.data?.accounts || [])
+      setGsvStats(accountsRes.data?.stats || null)
     } catch (error) {
-      console.error('Failed to load GSV data:', error)
-    } finally {
-      setGsvLoading(false)
+      console.error('Failed to load GSV accounts:', error)
+      setGsvAccounts([])
+      setGsvStats(null)
     }
+    
+    try {
+      const keysRes = await adminApi.getAllGsvKeys()
+      setAllKeysString(keysRes.data?.keys_string || '')
+    } catch (error) {
+      console.error('Failed to load GSV keys:', error)
+      setAllKeysString('')
+    }
+    
+    setGsvLoading(false)
   }
 
   const handleAddGsvAccount = async () => {
