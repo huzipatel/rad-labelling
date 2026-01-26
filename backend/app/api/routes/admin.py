@@ -492,46 +492,34 @@ class GSVAccountResponse(BaseModel):
     created_at: datetime
 
 
-# In-memory storage for GSV accounts (in production, you'd use the database)
-# This is stored server-side for simplicity
-import json
-from pathlib import Path
-
-GSV_DATA_FILE = Path("gsv_accounts_data.json")
-
-
-def load_gsv_data():
-    """Load GSV accounts data."""
-    if GSV_DATA_FILE.exists():
-        try:
-            with open(GSV_DATA_FILE) as f:
-                return json.load(f)
-        except:
-            pass
-    return {"accounts": [], "all_keys": []}
-
-
-def save_gsv_data(data):
-    """Save GSV accounts data."""
-    with open(GSV_DATA_FILE, "w") as f:
-        json.dump(data, f, indent=2, default=str)
+# GSV accounts are now stored in the database for persistence across deployments
+from app.models.gsv_account import GSVAccount, GSVProject
 
 
 @router.get("/gsv-accounts")
 async def get_gsv_accounts(
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_admin)
 ):
     """Get all GSV accounts and their keys."""
-    data = load_gsv_data()
+    result = await db.execute(select(GSVAccount).order_by(GSVAccount.created_at))
+    accounts = result.scalars().all()
     
-    # Calculate stats
-    total_projects = sum(len(a.get("projects", [])) for a in data["accounts"])
-    total_keys = sum(1 for a in data["accounts"] for p in a.get("projects", []) if p.get("api_key"))
+    # Convert to dict format
+    accounts_data = []
+    total_projects = 0
+    total_keys = 0
+    
+    for account in accounts:
+        account_dict = account.to_dict()
+        accounts_data.append(account_dict)
+        total_projects += len(account_dict.get("projects", []))
+        total_keys += sum(1 for p in account_dict.get("projects", []) if p.get("api_key"))
     
     return {
-        "accounts": data["accounts"],
+        "accounts": accounts_data,
         "stats": {
-            "total_accounts": len(data["accounts"]),
+            "total_accounts": len(accounts_data),
             "total_projects": total_projects,
             "total_keys": total_keys,
             "daily_capacity": total_keys * 25000,
@@ -543,40 +531,43 @@ async def get_gsv_accounts(
 @router.post("/gsv-accounts")
 async def add_gsv_account(
     account: GSVAccountCreate,
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_admin)
 ):
     """Add a new GSV Google account."""
-    data = load_gsv_data()
-    
     # Check if account already exists
-    if any(a["email"] == account.email for a in data["accounts"]):
+    result = await db.execute(select(GSVAccount).where(GSVAccount.email == account.email))
+    existing = result.scalar_one_or_none()
+    
+    if existing:
         raise HTTPException(status_code=400, detail="Account already exists")
     
-    new_account = {
-        "id": str(uuid.uuid4()),
-        "email": account.email,
-        "billing_id": account.billing_id,
-        "target_projects": account.target_projects,
-        "projects": [],
-        "created_at": datetime.utcnow().isoformat()
-    }
+    new_account = GSVAccount(
+        email=account.email,
+        billing_id=account.billing_id,
+        target_projects=account.target_projects
+    )
     
-    data["accounts"].append(new_account)
-    save_gsv_data(data)
+    db.add(new_account)
+    await db.commit()
+    await db.refresh(new_account)
     
-    return {"success": True, "account": new_account}
+    return {"success": True, "account": new_account.to_dict()}
 
 
 @router.delete("/gsv-accounts/{account_id}")
 async def delete_gsv_account(
     account_id: str,
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_admin)
 ):
     """Delete a GSV account entry."""
-    data = load_gsv_data()
+    result = await db.execute(select(GSVAccount).where(GSVAccount.id == account_id))
+    account = result.scalar_one_or_none()
     
-    data["accounts"] = [a for a in data["accounts"] if a.get("id") != account_id]
-    save_gsv_data(data)
+    if account:
+        await db.delete(account)
+        await db.commit()
     
     return {"success": True}
 
@@ -585,76 +576,98 @@ async def delete_gsv_account(
 async def add_gsv_key_manually(
     account_id: str,
     key_data: dict,
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_admin)
 ):
     """Manually add an API key to an account."""
-    data = load_gsv_data()
+    result = await db.execute(select(GSVAccount).where(GSVAccount.id == account_id))
+    account = result.scalar_one_or_none()
     
-    for account in data["accounts"]:
-        if account.get("id") == account_id:
-            if "projects" not in account:
-                account["projects"] = []
-            
-            account["projects"].append({
-                "project_id": key_data.get("project_id", f"manual-{len(account['projects']) + 1}"),
-                "api_key": key_data.get("api_key"),
-                "added_at": datetime.utcnow().isoformat()
-            })
-            
-            save_gsv_data(data)
-            return {"success": True}
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
     
-    raise HTTPException(status_code=404, detail="Account not found")
+    # Count existing projects
+    existing_count = await db.execute(
+        select(func.count(GSVProject.id)).where(GSVProject.account_id == account_id)
+    )
+    count = existing_count.scalar() or 0
+    
+    new_project = GSVProject(
+        account_id=account.id,
+        project_id=key_data.get("project_id", f"manual-{count + 1}"),
+        api_key=key_data.get("api_key"),
+        auto_created=False
+    )
+    
+    db.add(new_project)
+    await db.commit()
+    
+    return {"success": True}
 
 
 @router.post("/gsv-accounts/{account_id}/bulk-add-keys")
 async def bulk_add_gsv_keys(
     account_id: str,
     keys: dict,
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_admin)
 ):
     """Bulk add API keys to an account (comma-separated or newline-separated)."""
-    data = load_gsv_data()
+    result = await db.execute(select(GSVAccount).where(GSVAccount.id == account_id))
+    account = result.scalar_one_or_none()
+    
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
     
     keys_text = keys.get("keys", "")
     # Split by comma or newline
     key_list = [k.strip() for k in keys_text.replace("\n", ",").split(",") if k.strip()]
     
-    for account in data["accounts"]:
-        if account.get("id") == account_id:
-            if "projects" not in account:
-                account["projects"] = []
-            
-            added = 0
-            for i, key in enumerate(key_list):
-                # Check if key already exists
-                existing_keys = [p.get("api_key") for p in account["projects"]]
-                if key not in existing_keys:
-                    account["projects"].append({
-                        "project_id": f"imported-{len(account['projects']) + 1}",
-                        "api_key": key,
-                        "added_at": datetime.utcnow().isoformat()
-                    })
-                    added += 1
-            
-            save_gsv_data(data)
-            return {"success": True, "added": added, "total": len(account["projects"])}
+    # Get existing keys
+    existing_result = await db.execute(
+        select(GSVProject.api_key).where(GSVProject.account_id == account_id)
+    )
+    existing_keys = set(r for r in existing_result.scalars().all() if r)
     
-    raise HTTPException(status_code=404, detail="Account not found")
+    # Count existing projects
+    count_result = await db.execute(
+        select(func.count(GSVProject.id)).where(GSVProject.account_id == account_id)
+    )
+    existing_count = count_result.scalar() or 0
+    
+    added = 0
+    for i, key in enumerate(key_list):
+        if key not in existing_keys:
+            new_project = GSVProject(
+                account_id=account.id,
+                project_id=f"imported-{existing_count + added + 1}",
+                api_key=key,
+                auto_created=False
+            )
+            db.add(new_project)
+            added += 1
+    
+    await db.commit()
+    
+    # Get new total
+    total_result = await db.execute(
+        select(func.count(GSVProject.id)).where(GSVProject.account_id == account_id)
+    )
+    total = total_result.scalar() or 0
+    
+    return {"success": True, "added": added, "total": total}
 
 
 @router.get("/gsv-all-keys")
 async def get_all_gsv_keys(
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_admin)
 ):
     """Get all GSV API keys as a comma-separated string for Render."""
-    data = load_gsv_data()
-    
-    all_keys = []
-    for account in data["accounts"]:
-        for project in account.get("projects", []):
-            if project.get("api_key"):
-                all_keys.append(project["api_key"])
+    result = await db.execute(
+        select(GSVProject.api_key).where(GSVProject.api_key.isnot(None))
+    )
+    all_keys = [k for k in result.scalars().all() if k]
     
     return {
         "keys_string": ",".join(all_keys),
@@ -665,6 +678,7 @@ async def get_all_gsv_keys(
 
 @router.post("/gsv-apply-keys")
 async def apply_gsv_keys_to_config(
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_admin)
 ):
     """
@@ -673,13 +687,10 @@ async def apply_gsv_keys_to_config(
     """
     from app.core.config import settings
     
-    data = load_gsv_data()
-    
-    all_keys = []
-    for account in data["accounts"]:
-        for project in account.get("projects", []):
-            if project.get("api_key"):
-                all_keys.append(project["api_key"])
+    result = await db.execute(
+        select(GSVProject.api_key).where(GSVProject.api_key.isnot(None))
+    )
+    all_keys = [k for k in result.scalars().all() if k]
     
     if all_keys:
         # Update settings (this affects the running instance)
@@ -841,34 +852,34 @@ async def gsv_oauth_callback(
             email = userinfo.get("email")
             print(f"[GSV OAuth Callback] Got email: {email}")
             
-            # Step 3: Store the account with tokens
-            data = load_gsv_data()
+            # Step 3: Store the account with tokens in database
+            from app.core.database import async_session_maker
             
-            # Check if account exists, update or create
-            existing = next((a for a in data["accounts"] if a.get("email") == email), None)
-            
-            if existing:
-                existing["access_token"] = access_token
-                existing["refresh_token"] = refresh_token or existing.get("refresh_token")
-                existing["connected"] = True
-                existing["connected_at"] = datetime.utcnow().isoformat()
-                print(f"[GSV OAuth Callback] Updated existing account: {email}")
-            else:
-                data["accounts"].append({
-                    "id": str(uuid.uuid4()),
-                    "email": email,
-                    "billing_id": "",
-                    "target_projects": 30,
-                    "projects": [],
-                    "access_token": access_token,
-                    "refresh_token": refresh_token,
-                    "connected": True,
-                    "connected_at": datetime.utcnow().isoformat(),
-                    "created_at": datetime.utcnow().isoformat()
-                })
-                print(f"[GSV OAuth Callback] Created new account: {email}")
-            
-            save_gsv_data(data)
+            async with async_session_maker() as db:
+                # Check if account exists
+                result = await db.execute(select(GSVAccount).where(GSVAccount.email == email))
+                existing = result.scalar_one_or_none()
+                
+                if existing:
+                    existing.access_token = access_token
+                    existing.refresh_token = refresh_token or existing.refresh_token
+                    existing.connected = True
+                    existing.connected_at = datetime.utcnow()
+                    print(f"[GSV OAuth Callback] Updated existing account: {email}")
+                else:
+                    new_account = GSVAccount(
+                        email=email,
+                        billing_id="",
+                        target_projects=30,
+                        access_token=access_token,
+                        refresh_token=refresh_token,
+                        connected=True,
+                        connected_at=datetime.utcnow()
+                    )
+                    db.add(new_account)
+                    print(f"[GSV OAuth Callback] Created new account: {email}")
+                
+                await db.commit()
             
             # Redirect to frontend with success
             print(f"[GSV OAuth Callback] Success! Redirecting to frontend...")
@@ -907,7 +918,8 @@ async def refresh_google_token(account: dict) -> str:
 @router.post("/gsv-accounts/{account_id}/create-projects")
 async def create_gsv_projects(
     account_id: str,
-    count: int = Query(default=5, ge=1, le=30),
+    count: int = Query(default=5, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_admin)
 ):
     """
@@ -924,17 +936,18 @@ async def create_gsv_projects(
     """
     print(f"[GSV Create Projects] Starting for account_id: {account_id}, count: {count}")
     
-    data = load_gsv_data()
+    # Get account from database
+    result = await db.execute(select(GSVAccount).where(GSVAccount.id == account_id))
+    account = result.scalar_one_or_none()
     
-    account = next((a for a in data["accounts"] if a.get("id") == account_id), None)
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
     
-    if not account.get("connected") or not account.get("access_token"):
+    if not account.connected or not account.access_token:
         raise HTTPException(status_code=400, detail="Account not connected. Please sign in with Google first.")
     
-    access_token = account.get("access_token")
-    print(f"[GSV Create Projects] Using access token for: {account.get('email')}")
+    access_token = account.access_token
+    print(f"[GSV Create Projects] Using access token for: {account.email}")
     
     # Try to refresh token if needed
     try:
@@ -949,9 +962,10 @@ async def create_gsv_projects(
             
             if test_response.status_code == 401:
                 print("[GSV Create Projects] Token expired, refreshing...")
-                access_token = await refresh_google_token(account)
-                account["access_token"] = access_token
-                save_gsv_data(data)
+                account_dict = {"refresh_token": account.refresh_token}
+                access_token = await refresh_google_token(account_dict)
+                account.access_token = access_token
+                await db.commit()
             elif test_response.status_code == 403:
                 error_detail = test_response.json() if test_response.text else {}
                 print(f"[GSV Create Projects] Permission denied: {error_detail}")
@@ -969,8 +983,13 @@ async def create_gsv_projects(
     created_projects = []
     failed_projects = []
     
-    email_prefix = account["email"].split("@")[0][:8]
-    existing_count = len(account.get("projects", []))
+    email_prefix = account.email.split("@")[0][:8]
+    
+    # Get existing project count from database
+    existing_count_result = await db.execute(
+        select(func.count(GSVProject.id)).where(GSVProject.account_id == account.id)
+    )
+    existing_count = existing_count_result.scalar() or 0
     
     async with httpx.AsyncClient(timeout=120.0) as client:
         for i in range(count):
@@ -1118,16 +1137,16 @@ async def create_gsv_projects(
                 else:
                     print(f"[GSV Create Projects] Key creation failed: {key_response.text[:300]}")
                 
-                # Add to account projects
-                if "projects" not in account:
-                    account["projects"] = []
-                
-                account["projects"].append({
-                    "project_id": project_id,
-                    "api_key": api_key,
-                    "created_at": datetime.utcnow().isoformat(),
-                    "auto_created": True
-                })
+                # Add to database
+                new_project = GSVProject(
+                    account_id=account.id,
+                    project_id=project_id,
+                    project_name=f"GSV Download {project_num}",
+                    api_key=api_key,
+                    auto_created=True
+                )
+                db.add(new_project)
+                await db.commit()
                 
                 created_projects.append({
                     "project_id": project_id,
@@ -1139,8 +1158,6 @@ async def create_gsv_projects(
                 import traceback
                 traceback.print_exc()
                 failed_projects.append({"project_id": project_id, "step": "exception", "error": str(e)})
-    
-    save_gsv_data(data)
     
     print(f"[GSV Create Projects] Complete: {len(created_projects)} created, {len(failed_projects)} failed")
     if failed_projects:
@@ -1162,13 +1179,22 @@ async def create_gsv_projects(
             "5. Add the key manually using 'Add Keys Manually' button"
         )
     
+    # Get total keys from database
+    total_keys_result = await db.execute(
+        select(func.count(GSVProject.id)).where(
+            GSVProject.account_id == account.id,
+            GSVProject.api_key.isnot(None)
+        )
+    )
+    total_keys = total_keys_result.scalar() or 0
+    
     return {
         "success": len(created_projects) > 0,
         "created": len(created_projects),
         "failed": len(failed_projects),
         "created_projects": created_projects,
         "failed_projects": failed_projects[:5],  # Limit to first 5 errors
-        "total_keys": len([p for p in account.get("projects", []) if p.get("api_key")]),
+        "total_keys": total_keys,
         "error_help": error_help if error_help else None
     }
 
@@ -1176,6 +1202,7 @@ async def create_gsv_projects(
 @router.post("/gsv-accounts/{account_id}/generate-missing-keys")
 async def generate_missing_keys(
     account_id: str,
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_admin)
 ):
     """
@@ -1184,19 +1211,26 @@ async def generate_missing_keys(
     """
     print(f"[GSV Generate Keys] Starting for account_id: {account_id}")
     
-    data = load_gsv_data()
+    # Get account from database
+    result = await db.execute(select(GSVAccount).where(GSVAccount.id == account_id))
+    account = result.scalar_one_or_none()
     
-    account = next((a for a in data["accounts"] if a.get("id") == account_id), None)
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
     
-    if not account.get("connected") or not account.get("access_token"):
+    if not account.connected or not account.access_token:
         raise HTTPException(status_code=400, detail="Account not connected. Please sign in with Google first.")
     
-    access_token = account.get("access_token")
+    access_token = account.access_token
     
-    # Get projects without keys
-    projects_without_keys = [p for p in account.get("projects", []) if not p.get("api_key")]
+    # Get projects without keys from database
+    projects_result = await db.execute(
+        select(GSVProject).where(
+            GSVProject.account_id == account.id,
+            GSVProject.api_key.is_(None)
+        )
+    )
+    projects_without_keys = projects_result.scalars().all()
     
     if not projects_without_keys:
         return {"success": True, "message": "All projects already have keys", "generated": 0}
@@ -1208,23 +1242,23 @@ async def generate_missing_keys(
     
     async with httpx.AsyncClient(timeout=120.0) as client:
         for project in projects_without_keys:
-            project_id = project.get("project_id")
-            if not project_id:
+            gcp_project_id = project.project_id
+            if not gcp_project_id:
                 continue
                 
-            print(f"[GSV Generate Keys] Generating key for {project_id}")
+            print(f"[GSV Generate Keys] Generating key for {gcp_project_id}")
             
             try:
                 # First, enable API Keys API
                 enable_response = await client.post(
-                    f"https://serviceusage.googleapis.com/v1/projects/{project_id}/services/apikeys.googleapis.com:enable",
+                    f"https://serviceusage.googleapis.com/v1/projects/{gcp_project_id}/services/apikeys.googleapis.com:enable",
                     headers={"Authorization": f"Bearer {access_token}"}
                 )
                 print(f"[GSV Generate Keys] Enable API Keys API: {enable_response.status_code}")
                 
                 # Also enable Street View API
                 await client.post(
-                    f"https://serviceusage.googleapis.com/v1/projects/{project_id}/services/street-view-image-backend.googleapis.com:enable",
+                    f"https://serviceusage.googleapis.com/v1/projects/{gcp_project_id}/services/street-view-image-backend.googleapis.com:enable",
                     headers={"Authorization": f"Bearer {access_token}"}
                 )
                 
@@ -1232,7 +1266,7 @@ async def generate_missing_keys(
                 
                 # Create key
                 key_response = await client.post(
-                    f"https://apikeys.googleapis.com/v2/projects/{project_id}/locations/global/keys",
+                    f"https://apikeys.googleapis.com/v2/projects/{gcp_project_id}/locations/global/keys",
                     headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
                     json={"displayName": f"GSV-Key"}
                 )
@@ -1279,22 +1313,155 @@ async def generate_missing_keys(
                                 api_key = key_string_response.json().get("keyString")
                 
                 if api_key:
-                    project["api_key"] = api_key
+                    project.api_key = api_key
+                    await db.commit()
                     generated += 1
-                    print(f"[GSV Generate Keys] Successfully generated key for {project_id}")
+                    print(f"[GSV Generate Keys] Successfully generated key for {gcp_project_id}")
                 else:
                     failed += 1
-                    print(f"[GSV Generate Keys] Failed to get key for {project_id}")
+                    print(f"[GSV Generate Keys] Failed to get key for {gcp_project_id}")
                     
             except Exception as e:
-                print(f"[GSV Generate Keys] Exception for {project_id}: {str(e)}")
+                print(f"[GSV Generate Keys] Exception for {gcp_project_id}: {str(e)}")
                 failed += 1
     
-    save_gsv_data(data)
+    # Get total keys from database
+    total_keys_result = await db.execute(
+        select(func.count(GSVProject.id)).where(
+            GSVProject.account_id == account.id,
+            GSVProject.api_key.isnot(None)
+        )
+    )
+    total_keys = total_keys_result.scalar() or 0
     
     return {
         "success": generated > 0,
         "generated": generated,
         "failed": failed,
-        "total_keys": len([p for p in account.get("projects", []) if p.get("api_key")])
+        "total_keys": total_keys
     }
+
+
+@router.post("/gsv-accounts/{account_id}/sync-projects")
+async def sync_projects_from_gcp(
+    account_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin)
+):
+    """
+    Sync projects from Google Cloud Console.
+    This fetches all projects from the connected Google account and adds them to the database.
+    """
+    print(f"[GSV Sync Projects] Starting for account_id: {account_id}")
+    
+    # Get account from database
+    result = await db.execute(select(GSVAccount).where(GSVAccount.id == account_id))
+    account = result.scalar_one_or_none()
+    
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    
+    if not account.connected or not account.access_token:
+        raise HTTPException(status_code=400, detail="Account not connected. Please sign in with Google first.")
+    
+    access_token = account.access_token
+    
+    # Try to refresh token if needed
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Fetch all projects from Google Cloud
+            response = await client.get(
+                "https://cloudresourcemanager.googleapis.com/v1/projects",
+                headers={"Authorization": f"Bearer {access_token}"},
+                params={"pageSize": 1000}  # Get up to 1000 projects
+            )
+            
+            print(f"[GSV Sync Projects] GCP response: {response.status_code}")
+            
+            if response.status_code == 401:
+                # Token expired, refresh it
+                account_dict = {"refresh_token": account.refresh_token}
+                access_token = await refresh_google_token(account_dict)
+                account.access_token = access_token
+                await db.commit()
+                
+                # Retry
+                response = await client.get(
+                    "https://cloudresourcemanager.googleapis.com/v1/projects",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    params={"pageSize": 1000}
+                )
+            
+            if response.status_code != 200:
+                raise HTTPException(status_code=400, detail=f"Failed to fetch projects: {response.text[:200]}")
+            
+            projects_data = response.json()
+            gcp_projects = projects_data.get("projects", [])
+            
+            print(f"[GSV Sync Projects] Found {len(gcp_projects)} projects in Google Cloud")
+            
+            # Get existing project IDs in database
+            existing_result = await db.execute(
+                select(GSVProject.project_id).where(GSVProject.account_id == account.id)
+            )
+            existing_project_ids = set(existing_result.scalars().all())
+            
+            added = 0
+            skipped = 0
+            
+            for gcp_project in gcp_projects:
+                project_id = gcp_project.get("projectId")
+                project_name = gcp_project.get("name")
+                lifecycle_state = gcp_project.get("lifecycleState")
+                
+                # Skip non-active projects
+                if lifecycle_state != "ACTIVE":
+                    continue
+                
+                # Skip if already in database
+                if project_id in existing_project_ids:
+                    skipped += 1
+                    continue
+                
+                # Add to database (without API key - user will need to generate)
+                new_project = GSVProject(
+                    account_id=account.id,
+                    project_id=project_id,
+                    project_name=project_name,
+                    api_key=None,  # Will need to generate keys separately
+                    auto_created=False
+                )
+                db.add(new_project)
+                added += 1
+            
+            await db.commit()
+            
+            # Get total counts
+            total_result = await db.execute(
+                select(func.count(GSVProject.id)).where(GSVProject.account_id == account.id)
+            )
+            total_projects = total_result.scalar() or 0
+            
+            keys_result = await db.execute(
+                select(func.count(GSVProject.id)).where(
+                    GSVProject.account_id == account.id,
+                    GSVProject.api_key.isnot(None)
+                )
+            )
+            total_keys = keys_result.scalar() or 0
+            
+            return {
+                "success": True,
+                "projects_found": len(gcp_projects),
+                "added": added,
+                "skipped": skipped,
+                "total_projects": total_projects,
+                "total_keys": total_keys,
+                "message": f"Synced {added} new projects from Google Cloud. {total_projects - total_keys} projects need API keys."
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[GSV Sync Projects] Error: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Failed to sync projects: {str(e)}")

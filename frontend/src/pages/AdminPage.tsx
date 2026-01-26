@@ -103,6 +103,7 @@ export default function AdminPage() {
   const [applyingKeys, setApplyingKeys] = useState(false)
   const [creatingProjects, setCreatingProjects] = useState<string | null>(null)
   const [generatingKeys, setGeneratingKeys] = useState<string | null>(null)
+  const [syncingProjects, setSyncingProjects] = useState<string | null>(null)
   const [projectCountToCreate, setProjectCountToCreate] = useState(5)
   const [oauthConfig, setOauthConfig] = useState<{
     backend_url: string
@@ -489,6 +490,21 @@ export default function AdminPage() {
       alert(error.response?.data?.detail || 'Failed to generate keys')
     } finally {
       setGeneratingKeys(null)
+    }
+  }
+
+  const handleSyncProjects = async (accountId: string) => {
+    if (!confirm('Sync projects from Google Cloud Console? This will import any existing projects.')) return
+    
+    setSyncingProjects(accountId)
+    try {
+      const result = await adminApi.syncProjectsFromGcp(accountId)
+      alert(`${result.data.message}\n\nFound: ${result.data.projects_found}\nAdded: ${result.data.added}\nSkipped: ${result.data.skipped}`)
+      loadGsvData()
+    } catch (error: any) {
+      alert(error.response?.data?.detail || 'Failed to sync projects')
+    } finally {
+      setSyncingProjects(null)
     }
   }
 
@@ -1056,6 +1072,14 @@ export default function AdminPage() {
                     <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
                       {account.connected && (
                         <>
+                          <button 
+                            className="govuk-button"
+                            style={{ margin: 0, padding: '8px 16px', fontSize: '14px', background: '#6366f1' }}
+                            onClick={() => handleSyncProjects(account.id)}
+                            disabled={syncingProjects === account.id || creatingProjects === account.id || generatingKeys === account.id}
+                          >
+                            {syncingProjects === account.id ? '⏳ Syncing...' : '🔄 Sync from GCP'}
+                          </button>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                             <input 
                               type="number"
@@ -1078,7 +1102,7 @@ export default function AdminPage() {
                             className="govuk-button"
                             style={{ margin: 0, padding: '8px 16px', fontSize: '14px', background: '#10b981' }}
                             onClick={() => handleCreateProjects(account.id)}
-                            disabled={creatingProjects === account.id || generatingKeys === account.id}
+                            disabled={creatingProjects === account.id || generatingKeys === account.id || syncingProjects === account.id}
                           >
                             {creatingProjects === account.id ? '⏳ Creating...' : '🚀 Auto-Create Projects'}
                           </button>
@@ -1088,7 +1112,7 @@ export default function AdminPage() {
                               className="govuk-button"
                               style={{ margin: 0, padding: '8px 16px', fontSize: '14px', background: '#f59e0b' }}
                               onClick={() => handleGenerateMissingKeys(account.id)}
-                              disabled={generatingKeys === account.id || creatingProjects === account.id}
+                              disabled={generatingKeys === account.id || creatingProjects === account.id || syncingProjects === account.id}
                             >
                               {generatingKeys === account.id ? '⏳ Generating...' : `🔑 Generate ${account.projects.filter(p => !p.api_key).length} Missing Keys`}
                             </button>
