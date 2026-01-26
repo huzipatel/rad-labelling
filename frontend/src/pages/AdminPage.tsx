@@ -445,10 +445,24 @@ export default function AdminPage() {
     setCreatingProjects(accountId)
     try {
       const result = await adminApi.createGsvProjects(accountId, projectCountToCreate)
-      alert(`Created ${result.data.created} projects with API keys!\n${result.data.failed} failed.`)
+      
+      let message = `Created ${result.data.created} projects with API keys!\n${result.data.failed} failed.`
+      
+      // Show helpful error message if all failed
+      if (result.data.error_help) {
+        message += `\n\n${result.data.error_help}`
+      }
+      
+      // Show specific errors if any
+      if (result.data.failed_projects && result.data.failed_projects.length > 0) {
+        message += `\n\nFirst error: ${result.data.failed_projects[0]?.error || 'Unknown'}`
+      }
+      
+      alert(message)
       loadGsvData()
     } catch (error: any) {
-      alert(error.response?.data?.detail || 'Failed to create projects')
+      const detail = error.response?.data?.detail || 'Failed to create projects'
+      alert(`Error: ${detail}\n\nFor personal Google accounts, you may need to create projects manually in Google Cloud Console.`)
     } finally {
       setCreatingProjects(null)
     }

@@ -914,7 +914,16 @@ async def create_gsv_projects(
     Automatically create Google Cloud projects and API keys for a connected account.
     
     This requires the account to be connected via OAuth with the right permissions.
+    
+    IMPORTANT: The user's Google account must have:
+    1. Access to create projects (usually needs Organization-level "Project Creator" role)
+    2. A billing account linked to their org
+    
+    For personal accounts without an organization, project creation via API may not work.
+    In that case, create projects manually in Google Cloud Console.
     """
+    print(f"[GSV Create Projects] Starting for account_id: {account_id}, count: {count}")
+    
     data = load_gsv_data()
     
     account = next((a for a in data["accounts"] if a.get("id") == account_id), None)
@@ -925,23 +934,36 @@ async def create_gsv_projects(
         raise HTTPException(status_code=400, detail="Account not connected. Please sign in with Google first.")
     
     access_token = account.get("access_token")
+    print(f"[GSV Create Projects] Using access token for: {account.get('email')}")
     
     # Try to refresh token if needed
     try:
-        # Test if token is valid
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             test_response = await client.get(
                 "https://cloudresourcemanager.googleapis.com/v1/projects",
                 headers={"Authorization": f"Bearer {access_token}"},
                 params={"pageSize": 1}
             )
             
+            print(f"[GSV Create Projects] Token test response: {test_response.status_code}")
+            
             if test_response.status_code == 401:
-                # Token expired, refresh it
+                print("[GSV Create Projects] Token expired, refreshing...")
                 access_token = await refresh_google_token(account)
                 account["access_token"] = access_token
                 save_gsv_data(data)
+            elif test_response.status_code == 403:
+                error_detail = test_response.json() if test_response.text else {}
+                print(f"[GSV Create Projects] Permission denied: {error_detail}")
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Permission denied. Your Google account may not have 'Project Creator' role. "
+                           f"Try creating projects manually in Google Cloud Console. Error: {test_response.text[:200]}"
+                )
+    except HTTPException:
+        raise
     except Exception as e:
+        print(f"[GSV Create Projects] Auth error: {str(e)}")
         raise HTTPException(status_code=400, detail=f"Failed to authenticate: {str(e)}")
     
     created_projects = []
@@ -950,57 +972,127 @@ async def create_gsv_projects(
     email_prefix = account["email"].split("@")[0][:8]
     existing_count = len(account.get("projects", []))
     
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=120.0) as client:
         for i in range(count):
             project_num = existing_count + i + 1
             project_id = f"gsv-{email_prefix}-{project_num}-{uuid.uuid4().hex[:4]}"
             
+            print(f"[GSV Create Projects] Creating project {i+1}/{count}: {project_id}")
+            
             try:
-                # Step 1: Create project
+                # Step 1: Create project using v3 API (more reliable)
                 create_response = await client.post(
-                    "https://cloudresourcemanager.googleapis.com/v1/projects",
+                    "https://cloudresourcemanager.googleapis.com/v3/projects",
                     headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
-                    json={"projectId": project_id, "name": f"GSV Download {project_num}"}
+                    json={
+                        "projectId": project_id, 
+                        "displayName": f"GSV Download {project_num}"
+                    }
                 )
                 
-                if create_response.status_code not in [200, 409]:  # 409 = already exists
-                    failed_projects.append({"project_id": project_id, "error": f"Create failed: {create_response.text[:200]}"})
+                print(f"[GSV Create Projects] Create response: {create_response.status_code}")
+                
+                if create_response.status_code not in [200, 201, 409]:  # 409 = already exists
+                    error_text = create_response.text[:300]
+                    print(f"[GSV Create Projects] Create failed: {error_text}")
+                    failed_projects.append({
+                        "project_id": project_id, 
+                        "step": "create_project",
+                        "error": error_text
+                    })
                     continue
                 
-                # Wait for project to be created
-                await asyncio.sleep(2)
+                # Project creation returns an operation - wait for it
+                if create_response.status_code in [200, 201]:
+                    operation = create_response.json()
+                    operation_name = operation.get("name")
+                    
+                    if operation_name:
+                        # Poll operation until complete
+                        for _ in range(30):  # Max 30 seconds
+                            await asyncio.sleep(1)
+                            op_response = await client.get(
+                                f"https://cloudresourcemanager.googleapis.com/v3/{operation_name}",
+                                headers={"Authorization": f"Bearer {access_token}"}
+                            )
+                            if op_response.status_code == 200:
+                                op_data = op_response.json()
+                                if op_data.get("done"):
+                                    if op_data.get("error"):
+                                        print(f"[GSV Create Projects] Operation error: {op_data.get('error')}")
+                                        failed_projects.append({
+                                            "project_id": project_id, 
+                                            "step": "operation",
+                                            "error": str(op_data.get("error"))
+                                        })
+                                        continue
+                                    break
+                            await asyncio.sleep(1)
                 
-                # Step 2: Enable Street View API
+                print(f"[GSV Create Projects] Project created, enabling APIs...")
+                
+                # Step 2: Enable Street View Static API (the correct one for image downloads)
+                await asyncio.sleep(2)  # Wait a bit for project to be ready
+                
+                # Enable the Maps JavaScript API (which includes Street View)
                 enable_response = await client.post(
-                    f"https://serviceusage.googleapis.com/v1/projects/{project_id}/services/streetviewpublish.googleapis.com:enable",
+                    f"https://serviceusage.googleapis.com/v1/projects/{project_id}/services/maps-backend.googleapis.com:enable",
                     headers={"Authorization": f"Bearer {access_token}"}
                 )
+                print(f"[GSV Create Projects] Enable Maps API response: {enable_response.status_code}")
+                
+                # Also enable Street View Static API specifically
+                enable_sv_response = await client.post(
+                    f"https://serviceusage.googleapis.com/v1/projects/{project_id}/services/street-view-image-backend.googleapis.com:enable",
+                    headers={"Authorization": f"Bearer {access_token}"}
+                )
+                print(f"[GSV Create Projects] Enable Street View API response: {enable_sv_response.status_code}")
                 
                 # Step 3: Create API key
-                await asyncio.sleep(1)
+                await asyncio.sleep(2)
                 
+                print(f"[GSV Create Projects] Creating API key...")
                 key_response = await client.post(
                     f"https://apikeys.googleapis.com/v2/projects/{project_id}/locations/global/keys",
                     headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
-                    json={"displayName": f"GSV-Key-{project_num}"}
+                    json={
+                        "displayName": f"GSV-Key-{project_num}",
+                        "restrictions": {
+                            "apiTargets": [
+                                {"service": "maps-backend.googleapis.com"},
+                                {"service": "street-view-image-backend.googleapis.com"}
+                            ]
+                        }
+                    }
                 )
                 
+                print(f"[GSV Create Projects] Create key response: {key_response.status_code}")
+                
                 api_key = None
-                if key_response.status_code == 200:
+                if key_response.status_code in [200, 201]:
                     key_data = key_response.json()
-                    # The key string is in the response
                     api_key = key_data.get("keyString")
                     
                     if not api_key:
-                        # Need to get the key string separately
+                        # The create returns an operation, need to get the key separately
                         key_name = key_data.get("name")
+                        print(f"[GSV Create Projects] Key operation name: {key_name}")
+                        
                         if key_name:
+                            # Wait for key creation
+                            await asyncio.sleep(3)
+                            
+                            # Try to get the key string
                             key_string_response = await client.get(
                                 f"https://apikeys.googleapis.com/v2/{key_name}/keyString",
                                 headers={"Authorization": f"Bearer {access_token}"}
                             )
+                            print(f"[GSV Create Projects] Get key string response: {key_string_response.status_code}")
+                            
                             if key_string_response.status_code == 200:
                                 api_key = key_string_response.json().get("keyString")
+                else:
+                    print(f"[GSV Create Projects] Key creation failed: {key_response.text[:200]}")
                 
                 # Add to account projects
                 if "projects" not in account:
@@ -1019,15 +1111,39 @@ async def create_gsv_projects(
                 })
                 
             except Exception as e:
-                failed_projects.append({"project_id": project_id, "error": str(e)})
+                print(f"[GSV Create Projects] Exception for {project_id}: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                failed_projects.append({"project_id": project_id, "step": "exception", "error": str(e)})
     
     save_gsv_data(data)
     
+    print(f"[GSV Create Projects] Complete: {len(created_projects)} created, {len(failed_projects)} failed")
+    if failed_projects:
+        print(f"[GSV Create Projects] Failed details: {failed_projects}")
+    
+    # Build helpful error message if all failed
+    error_help = ""
+    if len(failed_projects) == count and len(created_projects) == 0:
+        error_help = (
+            "All projects failed to create. This is usually because:\n"
+            "1. Your Google account doesn't have 'Project Creator' role (common for personal @gmail.com accounts)\n"
+            "2. The Cloud Resource Manager API isn't enabled in your account's default project\n"
+            "3. You've hit the project quota limit\n\n"
+            "SOLUTION: Create projects manually in Google Cloud Console:\n"
+            "1. Go to console.cloud.google.com\n"
+            "2. Create a new project\n"
+            "3. Enable 'Street View Static API'\n"
+            "4. Create an API key under APIs & Services > Credentials\n"
+            "5. Add the key manually using 'Add Keys Manually' button"
+        )
+    
     return {
-        "success": True,
+        "success": len(created_projects) > 0,
         "created": len(created_projects),
         "failed": len(failed_projects),
         "created_projects": created_projects,
-        "failed_projects": failed_projects,
-        "total_keys": len([p for p in account.get("projects", []) if p.get("api_key")])
+        "failed_projects": failed_projects[:5],  # Limit to first 5 errors
+        "total_keys": len([p for p in account.get("projects", []) if p.get("api_key")]),
+        "error_help": error_help if error_help else None
     }
