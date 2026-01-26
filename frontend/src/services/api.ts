@@ -315,6 +315,8 @@ export const adminApi = {
     api.get('/admin/gsv-oauth-url'),
   createGsvProjects: (accountId: string, count: number = 5) =>
     api.post(`/admin/gsv-accounts/${accountId}/create-projects?count=${count}`),
+  generateMissingKeys: (accountId: string) =>
+    api.post(`/admin/gsv-accounts/${accountId}/generate-missing-keys`),
 }
 
 // Notifications API

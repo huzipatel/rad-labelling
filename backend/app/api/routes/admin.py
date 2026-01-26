@@ -1031,68 +1031,92 @@ async def create_gsv_projects(
                 
                 print(f"[GSV Create Projects] Project created, enabling APIs...")
                 
-                # Step 2: Enable Street View Static API (the correct one for image downloads)
-                await asyncio.sleep(2)  # Wait a bit for project to be ready
+                # Step 2: Enable required APIs
+                await asyncio.sleep(3)  # Wait a bit for project to be ready
                 
-                # Enable the Maps JavaScript API (which includes Street View)
-                enable_response = await client.post(
-                    f"https://serviceusage.googleapis.com/v1/projects/{project_id}/services/maps-backend.googleapis.com:enable",
+                # Enable API Keys API (required to create API keys)
+                enable_apikeys_response = await client.post(
+                    f"https://serviceusage.googleapis.com/v1/projects/{project_id}/services/apikeys.googleapis.com:enable",
                     headers={"Authorization": f"Bearer {access_token}"}
                 )
-                print(f"[GSV Create Projects] Enable Maps API response: {enable_response.status_code}")
+                print(f"[GSV Create Projects] Enable API Keys API response: {enable_apikeys_response.status_code}")
                 
-                # Also enable Street View Static API specifically
+                # Enable Street View Static API
                 enable_sv_response = await client.post(
                     f"https://serviceusage.googleapis.com/v1/projects/{project_id}/services/street-view-image-backend.googleapis.com:enable",
                     headers={"Authorization": f"Bearer {access_token}"}
                 )
                 print(f"[GSV Create Projects] Enable Street View API response: {enable_sv_response.status_code}")
                 
-                # Step 3: Create API key
-                await asyncio.sleep(2)
+                # Wait for APIs to be enabled
+                await asyncio.sleep(5)
                 
+                # Step 3: Create API key (without restrictions for simplicity)
                 print(f"[GSV Create Projects] Creating API key...")
                 key_response = await client.post(
                     f"https://apikeys.googleapis.com/v2/projects/{project_id}/locations/global/keys",
                     headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
                     json={
-                        "displayName": f"GSV-Key-{project_num}",
-                        "restrictions": {
-                            "apiTargets": [
-                                {"service": "maps-backend.googleapis.com"},
-                                {"service": "street-view-image-backend.googleapis.com"}
-                            ]
-                        }
+                        "displayName": f"GSV-Key-{project_num}"
                     }
                 )
                 
-                print(f"[GSV Create Projects] Create key response: {key_response.status_code}")
+                print(f"[GSV Create Projects] Create key response: {key_response.status_code} - {key_response.text[:300]}")
                 
                 api_key = None
                 if key_response.status_code in [200, 201]:
                     key_data = key_response.json()
-                    api_key = key_data.get("keyString")
                     
-                    if not api_key:
-                        # The create returns an operation, need to get the key separately
-                        key_name = key_data.get("name")
-                        print(f"[GSV Create Projects] Key operation name: {key_name}")
+                    # Check if it's an operation (long-running)
+                    if "name" in key_data and "operations/" in key_data.get("name", ""):
+                        # It's an operation, need to poll for completion
+                        operation_name = key_data.get("name")
+                        print(f"[GSV Create Projects] Key creation is an operation: {operation_name}")
                         
-                        if key_name:
-                            # Wait for key creation
-                            await asyncio.sleep(3)
-                            
-                            # Try to get the key string
+                        # Poll for operation completion
+                        for poll_attempt in range(20):  # Max 20 attempts (40 seconds)
+                            await asyncio.sleep(2)
+                            op_response = await client.get(
+                                f"https://apikeys.googleapis.com/v2/{operation_name}",
+                                headers={"Authorization": f"Bearer {access_token}"}
+                            )
+                            if op_response.status_code == 200:
+                                op_data = op_response.json()
+                                print(f"[GSV Create Projects] Operation poll {poll_attempt}: done={op_data.get('done')}")
+                                if op_data.get("done"):
+                                    # Get the key from the response
+                                    if "response" in op_data:
+                                        key_name = op_data["response"].get("name")
+                                        print(f"[GSV Create Projects] Key created: {key_name}")
+                                        
+                                        # Now get the key string
+                                        if key_name:
+                                            key_string_response = await client.get(
+                                                f"https://apikeys.googleapis.com/v2/{key_name}/keyString",
+                                                headers={"Authorization": f"Bearer {access_token}"}
+                                            )
+                                            print(f"[GSV Create Projects] Get key string response: {key_string_response.status_code}")
+                                            if key_string_response.status_code == 200:
+                                                api_key = key_string_response.json().get("keyString")
+                                                print(f"[GSV Create Projects] Got API key: {api_key[:10]}..." if api_key else "[GSV Create Projects] No key string in response")
+                                    break
+                                elif op_data.get("error"):
+                                    print(f"[GSV Create Projects] Operation error: {op_data.get('error')}")
+                                    break
+                    else:
+                        # Direct response with key
+                        api_key = key_data.get("keyString")
+                        if not api_key and "name" in key_data:
+                            # Try to get the key string directly
+                            key_name = key_data.get("name")
                             key_string_response = await client.get(
                                 f"https://apikeys.googleapis.com/v2/{key_name}/keyString",
                                 headers={"Authorization": f"Bearer {access_token}"}
                             )
-                            print(f"[GSV Create Projects] Get key string response: {key_string_response.status_code}")
-                            
                             if key_string_response.status_code == 200:
                                 api_key = key_string_response.json().get("keyString")
                 else:
-                    print(f"[GSV Create Projects] Key creation failed: {key_response.text[:200]}")
+                    print(f"[GSV Create Projects] Key creation failed: {key_response.text[:300]}")
                 
                 # Add to account projects
                 if "projects" not in account:
@@ -1146,4 +1170,131 @@ async def create_gsv_projects(
         "failed_projects": failed_projects[:5],  # Limit to first 5 errors
         "total_keys": len([p for p in account.get("projects", []) if p.get("api_key")]),
         "error_help": error_help if error_help else None
+    }
+
+
+@router.post("/gsv-accounts/{account_id}/generate-missing-keys")
+async def generate_missing_keys(
+    account_id: str,
+    current_user: User = Depends(require_admin)
+):
+    """
+    Generate API keys for existing projects that don't have keys.
+    This is useful when projects were created but key generation failed.
+    """
+    print(f"[GSV Generate Keys] Starting for account_id: {account_id}")
+    
+    data = load_gsv_data()
+    
+    account = next((a for a in data["accounts"] if a.get("id") == account_id), None)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    
+    if not account.get("connected") or not account.get("access_token"):
+        raise HTTPException(status_code=400, detail="Account not connected. Please sign in with Google first.")
+    
+    access_token = account.get("access_token")
+    
+    # Get projects without keys
+    projects_without_keys = [p for p in account.get("projects", []) if not p.get("api_key")]
+    
+    if not projects_without_keys:
+        return {"success": True, "message": "All projects already have keys", "generated": 0}
+    
+    print(f"[GSV Generate Keys] Found {len(projects_without_keys)} projects without keys")
+    
+    generated = 0
+    failed = 0
+    
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        for project in projects_without_keys:
+            project_id = project.get("project_id")
+            if not project_id:
+                continue
+                
+            print(f"[GSV Generate Keys] Generating key for {project_id}")
+            
+            try:
+                # First, enable API Keys API
+                enable_response = await client.post(
+                    f"https://serviceusage.googleapis.com/v1/projects/{project_id}/services/apikeys.googleapis.com:enable",
+                    headers={"Authorization": f"Bearer {access_token}"}
+                )
+                print(f"[GSV Generate Keys] Enable API Keys API: {enable_response.status_code}")
+                
+                # Also enable Street View API
+                await client.post(
+                    f"https://serviceusage.googleapis.com/v1/projects/{project_id}/services/street-view-image-backend.googleapis.com:enable",
+                    headers={"Authorization": f"Bearer {access_token}"}
+                )
+                
+                await asyncio.sleep(3)
+                
+                # Create key
+                key_response = await client.post(
+                    f"https://apikeys.googleapis.com/v2/projects/{project_id}/locations/global/keys",
+                    headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+                    json={"displayName": f"GSV-Key"}
+                )
+                
+                print(f"[GSV Generate Keys] Create key response: {key_response.status_code}")
+                
+                api_key = None
+                if key_response.status_code in [200, 201]:
+                    key_data = key_response.json()
+                    
+                    # Check if it's an operation
+                    if "name" in key_data and "operations/" in key_data.get("name", ""):
+                        operation_name = key_data.get("name")
+                        
+                        # Poll for completion
+                        for poll_attempt in range(15):
+                            await asyncio.sleep(2)
+                            op_response = await client.get(
+                                f"https://apikeys.googleapis.com/v2/{operation_name}",
+                                headers={"Authorization": f"Bearer {access_token}"}
+                            )
+                            if op_response.status_code == 200:
+                                op_data = op_response.json()
+                                if op_data.get("done"):
+                                    if "response" in op_data:
+                                        key_name = op_data["response"].get("name")
+                                        if key_name:
+                                            key_string_response = await client.get(
+                                                f"https://apikeys.googleapis.com/v2/{key_name}/keyString",
+                                                headers={"Authorization": f"Bearer {access_token}"}
+                                            )
+                                            if key_string_response.status_code == 200:
+                                                api_key = key_string_response.json().get("keyString")
+                                    break
+                    else:
+                        api_key = key_data.get("keyString")
+                        if not api_key and "name" in key_data:
+                            key_name = key_data.get("name")
+                            key_string_response = await client.get(
+                                f"https://apikeys.googleapis.com/v2/{key_name}/keyString",
+                                headers={"Authorization": f"Bearer {access_token}"}
+                            )
+                            if key_string_response.status_code == 200:
+                                api_key = key_string_response.json().get("keyString")
+                
+                if api_key:
+                    project["api_key"] = api_key
+                    generated += 1
+                    print(f"[GSV Generate Keys] Successfully generated key for {project_id}")
+                else:
+                    failed += 1
+                    print(f"[GSV Generate Keys] Failed to get key for {project_id}")
+                    
+            except Exception as e:
+                print(f"[GSV Generate Keys] Exception for {project_id}: {str(e)}")
+                failed += 1
+    
+    save_gsv_data(data)
+    
+    return {
+        "success": generated > 0,
+        "generated": generated,
+        "failed": failed,
+        "total_keys": len([p for p in account.get("projects", []) if p.get("api_key")])
     }

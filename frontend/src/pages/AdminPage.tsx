@@ -102,6 +102,7 @@ export default function AdminPage() {
   const [allKeysString, setAllKeysString] = useState('')
   const [applyingKeys, setApplyingKeys] = useState(false)
   const [creatingProjects, setCreatingProjects] = useState<string | null>(null)
+  const [generatingKeys, setGeneratingKeys] = useState<string | null>(null)
   const [projectCountToCreate, setProjectCountToCreate] = useState(5)
   const [oauthConfig, setOauthConfig] = useState<{
     backend_url: string
@@ -465,6 +466,29 @@ export default function AdminPage() {
       alert(`Error: ${detail}\n\nFor personal Google accounts, you may need to create projects manually in Google Cloud Console.`)
     } finally {
       setCreatingProjects(null)
+    }
+  }
+
+  const handleGenerateMissingKeys = async (accountId: string) => {
+    const account = gsvAccounts.find(a => a.id === accountId)
+    const projectsWithoutKeys = account?.projects?.filter(p => !p.api_key).length || 0
+    
+    if (projectsWithoutKeys === 0) {
+      alert('All projects already have API keys!')
+      return
+    }
+    
+    if (!confirm(`Generate API keys for ${projectsWithoutKeys} projects without keys? This may take a few minutes.`)) return
+    
+    setGeneratingKeys(accountId)
+    try {
+      const result = await adminApi.generateMissingKeys(accountId)
+      alert(`Generated ${result.data.generated} keys!\n${result.data.failed} failed.\nTotal keys: ${result.data.total_keys}`)
+      loadGsvData()
+    } catch (error: any) {
+      alert(error.response?.data?.detail || 'Failed to generate keys')
+    } finally {
+      setGeneratingKeys(null)
     }
   }
 
@@ -1054,10 +1078,21 @@ export default function AdminPage() {
                             className="govuk-button"
                             style={{ margin: 0, padding: '8px 16px', fontSize: '14px', background: '#10b981' }}
                             onClick={() => handleCreateProjects(account.id)}
-                            disabled={creatingProjects === account.id}
+                            disabled={creatingProjects === account.id || generatingKeys === account.id}
                           >
                             {creatingProjects === account.id ? '⏳ Creating...' : '🚀 Auto-Create Projects'}
                           </button>
+                          {/* Show generate keys button if there are projects without keys */}
+                          {account.projects && account.projects.filter(p => !p.api_key).length > 0 && (
+                            <button 
+                              className="govuk-button"
+                              style={{ margin: 0, padding: '8px 16px', fontSize: '14px', background: '#f59e0b' }}
+                              onClick={() => handleGenerateMissingKeys(account.id)}
+                              disabled={generatingKeys === account.id || creatingProjects === account.id}
+                            >
+                              {generatingKeys === account.id ? '⏳ Generating...' : `🔑 Generate ${account.projects.filter(p => !p.api_key).length} Missing Keys`}
+                            </button>
+                          )}
                         </>
                       )}
                       <button 
