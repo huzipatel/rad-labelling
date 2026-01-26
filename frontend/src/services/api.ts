@@ -307,6 +307,12 @@ export const adminApi = {
     api.get('/admin/gsv-all-keys'),
   applyGsvKeys: () =>
     api.post('/admin/gsv-apply-keys'),
+  
+  // GSV OAuth & Auto-create
+  getGsvOAuthUrl: () =>
+    api.get('/admin/gsv-oauth-url'),
+  createGsvProjects: (accountId: string, count: number = 5) =>
+    api.post(`/admin/gsv-accounts/${accountId}/create-projects?count=${count}`),
 }
 
 // Notifications API

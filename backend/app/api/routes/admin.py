@@ -693,3 +693,283 @@ async def apply_gsv_keys_to_config(
         }
     
     return {"success": False, "message": "No keys to apply"}
+
+
+# ============================================
+# Google Cloud OAuth for Project Management
+# ============================================
+
+import urllib.parse
+
+# Scopes needed for creating projects and API keys
+GOOGLE_CLOUD_SCOPES = [
+    "https://www.googleapis.com/auth/cloud-platform",
+    "https://www.googleapis.com/auth/cloudplatformprojects", 
+    "https://www.googleapis.com/auth/serviceusage",
+    "https://www.googleapis.com/auth/cloud-billing",
+    "openid",
+    "email",
+    "profile"
+]
+
+
+@router.get("/gsv-oauth-url")
+async def get_gsv_oauth_url(
+    current_user: User = Depends(require_admin)
+):
+    """Get Google OAuth URL for connecting a Google Cloud account."""
+    from app.core.config import settings
+    
+    if not settings.GOOGLE_CLIENT_ID:
+        raise HTTPException(status_code=400, detail="Google OAuth not configured. Set GOOGLE_CLIENT_ID in environment.")
+    
+    # Build OAuth URL
+    params = {
+        "client_id": settings.GOOGLE_CLIENT_ID,
+        "redirect_uri": settings.GOOGLE_CLOUD_REDIRECT_URI,
+        "response_type": "code",
+        "scope": " ".join(GOOGLE_CLOUD_SCOPES),
+        "access_type": "offline",  # Get refresh token
+        "prompt": "consent",  # Always show consent to get refresh token
+        "state": str(current_user.id)  # Pass user ID for security
+    }
+    
+    oauth_url = f"https://accounts.google.com/o/oauth2/v2/auth?{urllib.parse.urlencode(params)}"
+    
+    return {"oauth_url": oauth_url}
+
+
+@router.get("/gsv-oauth-callback")
+async def gsv_oauth_callback(
+    code: str,
+    state: str = None,
+    error: str = None
+):
+    """Handle Google OAuth callback - exchange code for tokens."""
+    from app.core.config import settings
+    
+    if error:
+        # Redirect to frontend with error
+        frontend_url = settings.CORS_ORIGINS[0] if settings.CORS_ORIGINS else "http://localhost:5173"
+        return RedirectResponse(f"{frontend_url}/admin?gsv_error={error}")
+    
+    # Exchange code for tokens
+    token_url = "https://oauth2.googleapis.com/token"
+    
+    async with httpx.AsyncClient() as client:
+        response = await client.post(token_url, data={
+            "client_id": settings.GOOGLE_CLIENT_ID,
+            "client_secret": settings.GOOGLE_CLIENT_SECRET,
+            "code": code,
+            "grant_type": "authorization_code",
+            "redirect_uri": settings.GOOGLE_CLOUD_REDIRECT_URI
+        })
+        
+        if response.status_code != 200:
+            frontend_url = settings.CORS_ORIGINS[0] if settings.CORS_ORIGINS else "http://localhost:5173"
+            return RedirectResponse(f"{frontend_url}/admin?gsv_error=token_exchange_failed")
+        
+        tokens = response.json()
+        access_token = tokens.get("access_token")
+        refresh_token = tokens.get("refresh_token")
+        
+        # Get user info
+        userinfo_response = await client.get(
+            "https://www.googleapis.com/oauth2/v2/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"}
+        )
+        
+        if userinfo_response.status_code == 200:
+            userinfo = userinfo_response.json()
+            email = userinfo.get("email")
+            
+            # Store the account with tokens
+            data = load_gsv_data()
+            
+            # Check if account exists, update or create
+            existing = next((a for a in data["accounts"] if a.get("email") == email), None)
+            
+            if existing:
+                existing["access_token"] = access_token
+                existing["refresh_token"] = refresh_token or existing.get("refresh_token")
+                existing["connected"] = True
+                existing["connected_at"] = datetime.utcnow().isoformat()
+            else:
+                data["accounts"].append({
+                    "id": str(uuid.uuid4()),
+                    "email": email,
+                    "billing_id": "",
+                    "target_projects": 30,
+                    "projects": [],
+                    "access_token": access_token,
+                    "refresh_token": refresh_token,
+                    "connected": True,
+                    "connected_at": datetime.utcnow().isoformat(),
+                    "created_at": datetime.utcnow().isoformat()
+                })
+            
+            save_gsv_data(data)
+            
+            # Redirect to frontend with success
+            frontend_url = settings.CORS_ORIGINS[0] if settings.CORS_ORIGINS else "http://localhost:5173"
+            return RedirectResponse(f"{frontend_url}/admin?gsv_connected={email}")
+        
+        frontend_url = settings.CORS_ORIGINS[0] if settings.CORS_ORIGINS else "http://localhost:5173"
+        return RedirectResponse(f"{frontend_url}/admin?gsv_error=userinfo_failed")
+
+
+async def refresh_google_token(account: dict) -> str:
+    """Refresh an expired Google access token."""
+    from app.core.config import settings
+    
+    refresh_token = account.get("refresh_token")
+    if not refresh_token:
+        raise Exception("No refresh token available")
+    
+    async with httpx.AsyncClient() as client:
+        response = await client.post("https://oauth2.googleapis.com/token", data={
+            "client_id": settings.GOOGLE_CLIENT_ID,
+            "client_secret": settings.GOOGLE_CLIENT_SECRET,
+            "refresh_token": refresh_token,
+            "grant_type": "refresh_token"
+        })
+        
+        if response.status_code == 200:
+            tokens = response.json()
+            return tokens.get("access_token")
+        
+        raise Exception(f"Token refresh failed: {response.text}")
+
+
+@router.post("/gsv-accounts/{account_id}/create-projects")
+async def create_gsv_projects(
+    account_id: str,
+    count: int = Query(default=5, ge=1, le=30),
+    current_user: User = Depends(require_admin)
+):
+    """
+    Automatically create Google Cloud projects and API keys for a connected account.
+    
+    This requires the account to be connected via OAuth with the right permissions.
+    """
+    data = load_gsv_data()
+    
+    account = next((a for a in data["accounts"] if a.get("id") == account_id), None)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    
+    if not account.get("connected") or not account.get("access_token"):
+        raise HTTPException(status_code=400, detail="Account not connected. Please sign in with Google first.")
+    
+    access_token = account.get("access_token")
+    
+    # Try to refresh token if needed
+    try:
+        # Test if token is valid
+        async with httpx.AsyncClient() as client:
+            test_response = await client.get(
+                "https://cloudresourcemanager.googleapis.com/v1/projects",
+                headers={"Authorization": f"Bearer {access_token}"},
+                params={"pageSize": 1}
+            )
+            
+            if test_response.status_code == 401:
+                # Token expired, refresh it
+                access_token = await refresh_google_token(account)
+                account["access_token"] = access_token
+                save_gsv_data(data)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to authenticate: {str(e)}")
+    
+    created_projects = []
+    failed_projects = []
+    
+    email_prefix = account["email"].split("@")[0][:8]
+    existing_count = len(account.get("projects", []))
+    
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        for i in range(count):
+            project_num = existing_count + i + 1
+            project_id = f"gsv-{email_prefix}-{project_num}-{uuid.uuid4().hex[:4]}"
+            
+            try:
+                # Step 1: Create project
+                create_response = await client.post(
+                    "https://cloudresourcemanager.googleapis.com/v1/projects",
+                    headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+                    json={"projectId": project_id, "name": f"GSV Download {project_num}"}
+                )
+                
+                if create_response.status_code not in [200, 409]:  # 409 = already exists
+                    failed_projects.append({"project_id": project_id, "error": f"Create failed: {create_response.text[:200]}"})
+                    continue
+                
+                # Wait for project to be created
+                await asyncio.sleep(2)
+                
+                # Step 2: Enable Street View API
+                enable_response = await client.post(
+                    f"https://serviceusage.googleapis.com/v1/projects/{project_id}/services/streetviewpublish.googleapis.com:enable",
+                    headers={"Authorization": f"Bearer {access_token}"}
+                )
+                
+                # Step 3: Create API key
+                await asyncio.sleep(1)
+                
+                key_response = await client.post(
+                    f"https://apikeys.googleapis.com/v2/projects/{project_id}/locations/global/keys",
+                    headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+                    json={"displayName": f"GSV-Key-{project_num}"}
+                )
+                
+                api_key = None
+                if key_response.status_code == 200:
+                    key_data = key_response.json()
+                    # The key string is in the response
+                    api_key = key_data.get("keyString")
+                    
+                    if not api_key:
+                        # Need to get the key string separately
+                        key_name = key_data.get("name")
+                        if key_name:
+                            key_string_response = await client.get(
+                                f"https://apikeys.googleapis.com/v2/{key_name}/keyString",
+                                headers={"Authorization": f"Bearer {access_token}"}
+                            )
+                            if key_string_response.status_code == 200:
+                                api_key = key_string_response.json().get("keyString")
+                
+                # Add to account projects
+                if "projects" not in account:
+                    account["projects"] = []
+                
+                account["projects"].append({
+                    "project_id": project_id,
+                    "api_key": api_key,
+                    "created_at": datetime.utcnow().isoformat(),
+                    "auto_created": True
+                })
+                
+                created_projects.append({
+                    "project_id": project_id,
+                    "api_key": api_key[:20] + "..." if api_key else None
+                })
+                
+            except Exception as e:
+                failed_projects.append({"project_id": project_id, "error": str(e)})
+    
+    save_gsv_data(data)
+    
+    return {
+        "success": True,
+        "created": len(created_projects),
+        "failed": len(failed_projects),
+        "created_projects": created_projects,
+        "failed_projects": failed_projects,
+        "total_keys": len([p for p in account.get("projects", []) if p.get("api_key")])
+    }
+
+
+# Need to import for RedirectResponse
+from fastapi.responses import RedirectResponse
+import asyncio

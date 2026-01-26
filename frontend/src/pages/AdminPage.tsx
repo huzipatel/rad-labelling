@@ -49,6 +49,8 @@ interface GsvAccount {
   target_projects: number
   projects: GsvProject[]
   created_at: string
+  connected?: boolean
+  connected_at?: string
 }
 
 interface GsvStats {
@@ -99,6 +101,8 @@ export default function AdminPage() {
   const [bulkKeysText, setBulkKeysText] = useState('')
   const [allKeysString, setAllKeysString] = useState('')
   const [applyingKeys, setApplyingKeys] = useState(false)
+  const [creatingProjects, setCreatingProjects] = useState<string | null>(null)
+  const [projectCountToCreate, setProjectCountToCreate] = useState(5)
   
   const [formData, setFormData] = useState({
     email: '',
@@ -403,6 +407,48 @@ export default function AdminPage() {
       setApplyingKeys(false)
     }
   }
+
+  const handleConnectGoogleAccount = async () => {
+    try {
+      const result = await adminApi.getGsvOAuthUrl()
+      // Open OAuth URL in a new window or redirect
+      window.location.href = result.data.oauth_url
+    } catch (error: any) {
+      alert(error.response?.data?.detail || 'Failed to get OAuth URL. Make sure GOOGLE_CLIENT_ID is configured.')
+    }
+  }
+
+  const handleCreateProjects = async (accountId: string) => {
+    if (!confirm(`Create ${projectCountToCreate} new Google Cloud projects? This may take a few minutes.`)) return
+    setCreatingProjects(accountId)
+    try {
+      const result = await adminApi.createGsvProjects(accountId, projectCountToCreate)
+      alert(`Created ${result.data.created} projects with API keys!\n${result.data.failed} failed.`)
+      loadGsvData()
+    } catch (error: any) {
+      alert(error.response?.data?.detail || 'Failed to create projects')
+    } finally {
+      setCreatingProjects(null)
+    }
+  }
+
+  // Check for OAuth callback params
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const gsvConnected = params.get('gsv_connected')
+    const gsvError = params.get('gsv_error')
+    
+    if (gsvConnected) {
+      alert(`Successfully connected Google account: ${gsvConnected}`)
+      window.history.replaceState({}, '', '/admin')
+      setActiveTab('gsv-keys')
+      loadGsvData()
+    }
+    if (gsvError) {
+      alert(`Failed to connect Google account: ${gsvError}`)
+      window.history.replaceState({}, '', '/admin')
+    }
+  }, [])
 
   if (loading) return <Loading />
 
@@ -719,19 +765,39 @@ export default function AdminPage() {
               padding: '16px',
               marginBottom: '24px'
             }}>
-              <h3 style={{ color: '#7c3aed', marginBottom: '12px', fontSize: '1rem' }}>📋 How to Add API Keys</h3>
-              <ol style={{ marginLeft: '20px', color: '#666', marginBottom: 0 }}>
-                <li>Create Google Cloud projects with Street View API enabled</li>
-                <li>Generate API keys from each project's credentials page</li>
-                <li>Click "Add Account" and paste your keys (comma or newline separated)</li>
-                <li>Click "Apply to App" to use the keys immediately, or copy to Render</li>
-              </ol>
+              <h3 style={{ color: '#7c3aed', marginBottom: '12px', fontSize: '1rem' }}>📋 Two Ways to Add API Keys</h3>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+                <div>
+                  <strong style={{ color: '#10b981' }}>🚀 Automatic (Recommended)</strong>
+                  <ol style={{ marginLeft: '20px', color: '#666', marginBottom: 0, marginTop: '8px' }}>
+                    <li>Click "Sign in with Google"</li>
+                    <li>Authorize cloud permissions</li>
+                    <li>Click "Auto-Create Projects"</li>
+                    <li>Keys are generated automatically!</li>
+                  </ol>
+                </div>
+                <div>
+                  <strong style={{ color: '#6b7280' }}>📝 Manual</strong>
+                  <ol style={{ marginLeft: '20px', color: '#666', marginBottom: 0, marginTop: '8px' }}>
+                    <li>Create projects in Google Cloud Console</li>
+                    <li>Generate API keys manually</li>
+                    <li>Click "Add Keys Manually" and paste</li>
+                  </ol>
+                </div>
+              </div>
             </div>
 
             {/* Action Buttons */}
             <div className="govuk-button-group govuk-!-margin-bottom-4">
-              <button className="govuk-button" onClick={() => setAddAccountModalOpen(true)}>
-                + Add Account
+              <button 
+                className="govuk-button"
+                onClick={handleConnectGoogleAccount}
+                style={{ background: '#4285f4' }}
+              >
+                🔗 Sign in with Google
+              </button>
+              <button className="govuk-button govuk-button--secondary" onClick={() => setAddAccountModalOpen(true)}>
+                + Add Keys Manually
               </button>
               <button 
                 className="govuk-button govuk-button--secondary" 
@@ -782,7 +848,7 @@ export default function AdminPage() {
                 {gsvAccounts.map((account) => (
                   <div key={account.id} style={{
                     background: 'rgba(255,255,255,0.05)',
-                    border: '1px solid rgba(255,255,255,0.1)',
+                    border: account.connected ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(255,255,255,0.1)',
                     borderRadius: '12px',
                     padding: '20px',
                     marginBottom: '16px'
@@ -790,6 +856,18 @@ export default function AdminPage() {
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
                       <div>
                         <strong style={{ color: '#00d4ff' }}>{account.email}</strong>
+                        {account.connected && (
+                          <span style={{ 
+                            marginLeft: '12px', 
+                            padding: '2px 8px', 
+                            borderRadius: '10px',
+                            fontSize: '0.75rem',
+                            background: 'rgba(16, 185, 129, 0.2)',
+                            color: '#10b981'
+                          }}>
+                            ✓ Connected
+                          </span>
+                        )}
                         {account.billing_id && (
                           <span style={{ color: '#888', marginLeft: '12px', fontSize: '0.9rem' }}>
                             Billing: {account.billing_id}
@@ -817,7 +895,35 @@ export default function AdminPage() {
                       }} />
                     </div>
                     
-                    <div style={{ display: 'flex', gap: '8px' }}>
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+                      {account.connected && (
+                        <>
+                          <select 
+                            value={projectCountToCreate}
+                            onChange={(e) => setProjectCountToCreate(parseInt(e.target.value))}
+                            style={{ 
+                              padding: '8px', 
+                              borderRadius: '4px', 
+                              border: '1px solid #ccc',
+                              fontSize: '14px'
+                            }}
+                          >
+                            <option value="1">1 project</option>
+                            <option value="5">5 projects</option>
+                            <option value="10">10 projects</option>
+                            <option value="20">20 projects</option>
+                            <option value="30">30 projects</option>
+                          </select>
+                          <button 
+                            className="govuk-button"
+                            style={{ margin: 0, padding: '8px 16px', fontSize: '14px', background: '#10b981' }}
+                            onClick={() => handleCreateProjects(account.id)}
+                            disabled={creatingProjects === account.id}
+                          >
+                            {creatingProjects === account.id ? '⏳ Creating...' : '🚀 Auto-Create Projects'}
+                          </button>
+                        </>
+                      )}
                       <button 
                         className="govuk-button govuk-button--secondary"
                         style={{ margin: 0, padding: '8px 16px', fontSize: '14px' }}
@@ -826,7 +932,7 @@ export default function AdminPage() {
                           setAddKeysModalOpen(true)
                         }}
                       >
-                        + Add Keys
+                        + Add Keys Manually
                       </button>
                       <button 
                         className="govuk-button govuk-button--warning"

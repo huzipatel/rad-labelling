@@ -24,10 +24,14 @@ class Settings(BaseSettings):
     DATABASE_POOL_SIZE: int = 5
     DATABASE_MAX_OVERFLOW: int = 10
     
-    # Google OAuth
+    # Google OAuth (for user login)
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
     GOOGLE_REDIRECT_URI: str = "http://localhost:8000/api/v1/auth/google/callback"
+    
+    # Google Cloud OAuth (for GSV project management - needs cloud-platform scope)
+    # Use the same client ID/secret but with different redirect URI
+    GOOGLE_CLOUD_REDIRECT_URI: str = "http://localhost:8000/api/v1/admin/gsv-oauth-callback"
     
     # Google Street View API
     # Single key (backwards compatible)
