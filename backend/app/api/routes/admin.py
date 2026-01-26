@@ -502,8 +502,17 @@ async def get_gsv_accounts(
     current_user: User = Depends(require_admin)
 ):
     """Get all GSV accounts and their keys."""
-    result = await db.execute(select(GSVAccount).order_by(GSVAccount.created_at))
+    from sqlalchemy.orm import selectinload
+    
+    # Use selectinload to eagerly load projects (required for async SQLAlchemy)
+    result = await db.execute(
+        select(GSVAccount)
+        .options(selectinload(GSVAccount.projects))
+        .order_by(GSVAccount.created_at)
+    )
     accounts = result.scalars().all()
+    
+    print(f"[GSV Accounts] Found {len(accounts)} accounts in database")
     
     # Convert to dict format
     accounts_data = []
@@ -526,6 +535,47 @@ async def get_gsv_accounts(
             "estimated_hours_for_1_7m": round(1700000 / (total_keys * 25000), 1) if total_keys > 0 else 0
         }
     }
+
+
+@router.get("/gsv-accounts-debug")
+async def debug_gsv_accounts(
+    current_user: User = Depends(require_admin)
+):
+    """Debug endpoint to check GSV accounts directly via raw SQL."""
+    from app.core.database import engine
+    from sqlalchemy import text
+    
+    try:
+        async with engine.begin() as conn:
+            # Check if table exists
+            result = await conn.execute(text(
+                "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'gsv_accounts')"
+            ))
+            table_exists = result.scalar()
+            
+            if not table_exists:
+                return {"error": "gsv_accounts table does not exist", "table_exists": False}
+            
+            # Get all accounts
+            result = await conn.execute(text("SELECT id, email, connected, created_at FROM gsv_accounts"))
+            rows = result.fetchall()
+            
+            accounts = []
+            for row in rows:
+                accounts.append({
+                    "id": str(row[0]),
+                    "email": row[1],
+                    "connected": row[2],
+                    "created_at": str(row[3]) if row[3] else None
+                })
+            
+            return {
+                "table_exists": True,
+                "account_count": len(accounts),
+                "accounts": accounts
+            }
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @router.post("/gsv-accounts")
