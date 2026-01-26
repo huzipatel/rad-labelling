@@ -36,6 +36,29 @@ interface Invitation {
   accepted_at: string | null
 }
 
+interface GsvProject {
+  project_id: string
+  api_key: string
+  added_at?: string
+}
+
+interface GsvAccount {
+  id: string
+  email: string
+  billing_id: string
+  target_projects: number
+  projects: GsvProject[]
+  created_at: string
+}
+
+interface GsvStats {
+  total_accounts: number
+  total_projects: number
+  total_keys: number
+  daily_capacity: number
+  estimated_hours_for_1_7m: number
+}
+
 export default function AdminPage() {
   const [loading, setLoading] = useState(true)
   const [users, setUsers] = useState<User[]>([])
@@ -66,29 +89,6 @@ export default function AdminPage() {
   })
   
   // GSV Keys state
-  interface GsvProject {
-    project_id: string
-    api_key: string
-    added_at?: string
-  }
-  
-  interface GsvAccount {
-    id: string
-    email: string
-    billing_id: string
-    target_projects: number
-    projects: GsvProject[]
-    created_at: string
-  }
-  
-  interface GsvStats {
-    total_accounts: number
-    total_projects: number
-    total_keys: number
-    daily_capacity: number
-    estimated_hours_for_1_7m: number
-  }
-  
   const [gsvAccounts, setGsvAccounts] = useState<GsvAccount[]>([])
   const [gsvStats, setGsvStats] = useState<GsvStats | null>(null)
   const [gsvLoading, setGsvLoading] = useState(false)
