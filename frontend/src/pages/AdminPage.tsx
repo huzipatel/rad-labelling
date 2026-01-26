@@ -1008,25 +1008,48 @@ export default function AdminPage() {
                       }} />
                     </div>
                     
+                    {/* Current Stats */}
+                    <div style={{ 
+                      display: 'flex', 
+                      gap: '16px', 
+                      marginBottom: '12px',
+                      padding: '8px 12px',
+                      background: 'rgba(0,0,0,0.2)',
+                      borderRadius: '6px',
+                      fontSize: '0.9rem'
+                    }}>
+                      <span>
+                        <strong style={{ color: '#10b981' }}>{account.projects?.length || 0}</strong> projects
+                      </span>
+                      <span>
+                        <strong style={{ color: '#7c3aed' }}>{account.projects?.filter(p => p.api_key).length || 0}</strong> API keys
+                      </span>
+                      <span>
+                        <strong style={{ color: '#f59e0b' }}>{((account.projects?.filter(p => p.api_key).length || 0) * 25000).toLocaleString()}</strong> daily capacity
+                      </span>
+                    </div>
+
                     <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
                       {account.connected && (
                         <>
-                          <select 
-                            value={projectCountToCreate}
-                            onChange={(e) => setProjectCountToCreate(parseInt(e.target.value))}
-                            style={{ 
-                              padding: '8px', 
-                              borderRadius: '4px', 
-                              border: '1px solid #ccc',
-                              fontSize: '14px'
-                            }}
-                          >
-                            <option value="1">1 project</option>
-                            <option value="5">5 projects</option>
-                            <option value="10">10 projects</option>
-                            <option value="20">20 projects</option>
-                            <option value="30">30 projects</option>
-                          </select>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            <input 
+                              type="number"
+                              min="1"
+                              max="100"
+                              value={projectCountToCreate}
+                              onChange={(e) => setProjectCountToCreate(Math.max(1, Math.min(100, parseInt(e.target.value) || 1)))}
+                              style={{ 
+                                padding: '8px', 
+                                borderRadius: '4px', 
+                                border: '1px solid #ccc',
+                                fontSize: '14px',
+                                width: '70px',
+                                textAlign: 'center'
+                              }}
+                            />
+                            <span style={{ color: '#888', fontSize: '0.9rem' }}>projects</span>
+                          </div>
                           <button 
                             className="govuk-button"
                             style={{ margin: 0, padding: '8px 16px', fontSize: '14px', background: '#10b981' }}
