@@ -112,7 +112,8 @@ async def init_db() -> None:
         User, Invitation, Location, LocationType, Task, Label, GSVImage,
         CouncilBoundary, CombinedAuthority, RoadClassification,
         Shapefile, EnhancementJob, UploadJob, DownloadLog,
-        NotificationSettings, UserNotificationPreferences, NotificationLog
+        NotificationSettings, UserNotificationPreferences, NotificationLog,
+        GSVAccount, GSVProject
     )
     
     # Enable PostGIS extension first (required for geography/geometry types)
@@ -198,6 +199,54 @@ async def init_db() -> None:
         print("[Database] Tasks table columns updated")
     except Exception as e:
         print(f"[Database] Error adding task columns: {e}")
+    
+    # Create GSV account tables if they don't exist
+    print("[Database] Creating GSV account tables...")
+    try:
+        async with engine.begin() as conn:
+            # Check if gsv_accounts table exists
+            result = await conn.execute(text(
+                "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'gsv_accounts')"
+            ))
+            if not result.scalar():
+                print("[Database] Creating gsv_accounts table...")
+                await conn.execute(text("""
+                    CREATE TABLE gsv_accounts (
+                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        email VARCHAR(255) UNIQUE NOT NULL,
+                        billing_id VARCHAR(100),
+                        target_projects INTEGER DEFAULT 30,
+                        access_token TEXT,
+                        refresh_token TEXT,
+                        connected BOOLEAN DEFAULT FALSE,
+                        connected_at TIMESTAMP,
+                        created_at TIMESTAMP DEFAULT NOW(),
+                        updated_at TIMESTAMP DEFAULT NOW()
+                    )
+                """))
+            
+            # Check if gsv_projects table exists
+            result = await conn.execute(text(
+                "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'gsv_projects')"
+            ))
+            if not result.scalar():
+                print("[Database] Creating gsv_projects table...")
+                await conn.execute(text("""
+                    CREATE TABLE gsv_projects (
+                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        account_id UUID NOT NULL REFERENCES gsv_accounts(id) ON DELETE CASCADE,
+                        project_id VARCHAR(100) NOT NULL,
+                        project_name VARCHAR(255),
+                        api_key TEXT,
+                        auto_created BOOLEAN DEFAULT FALSE,
+                        created_at TIMESTAMP DEFAULT NOW()
+                    )
+                """))
+                await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_gsv_projects_account_id ON gsv_projects(account_id)"))
+        
+        print("[Database] GSV tables created/verified")
+    except Exception as e:
+        print(f"[Database] Error creating GSV tables: {e}")
     
     print("[Database] Schema migration completed")
 

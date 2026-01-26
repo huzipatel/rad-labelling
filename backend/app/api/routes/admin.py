@@ -855,31 +855,41 @@ async def gsv_oauth_callback(
             # Step 3: Store the account with tokens in database
             from app.core.database import async_session_maker
             
-            async with async_session_maker() as db:
-                # Check if account exists
-                result = await db.execute(select(GSVAccount).where(GSVAccount.email == email))
-                existing = result.scalar_one_or_none()
-                
-                if existing:
-                    existing.access_token = access_token
-                    existing.refresh_token = refresh_token or existing.refresh_token
-                    existing.connected = True
-                    existing.connected_at = datetime.utcnow()
-                    print(f"[GSV OAuth Callback] Updated existing account: {email}")
-                else:
-                    new_account = GSVAccount(
-                        email=email,
-                        billing_id="",
-                        target_projects=30,
-                        access_token=access_token,
-                        refresh_token=refresh_token,
-                        connected=True,
-                        connected_at=datetime.utcnow()
-                    )
-                    db.add(new_account)
-                    print(f"[GSV OAuth Callback] Created new account: {email}")
-                
-                await db.commit()
+            try:
+                async with async_session_maker() as db:
+                    # Check if account exists
+                    print(f"[GSV OAuth Callback] Checking for existing account: {email}")
+                    result = await db.execute(select(GSVAccount).where(GSVAccount.email == email))
+                    existing = result.scalar_one_or_none()
+                    
+                    if existing:
+                        existing.access_token = access_token
+                        existing.refresh_token = refresh_token or existing.refresh_token
+                        existing.connected = True
+                        existing.connected_at = datetime.utcnow()
+                        print(f"[GSV OAuth Callback] Updated existing account: {email}")
+                    else:
+                        new_account = GSVAccount(
+                            email=email,
+                            billing_id="",
+                            target_projects=30,
+                            access_token=access_token,
+                            refresh_token=refresh_token,
+                            connected=True,
+                            connected_at=datetime.utcnow()
+                        )
+                        db.add(new_account)
+                        print(f"[GSV OAuth Callback] Created new account: {email}")
+                    
+                    await db.commit()
+                    print(f"[GSV OAuth Callback] Database commit successful")
+            except Exception as db_error:
+                print(f"[GSV OAuth Callback] DATABASE ERROR: {str(db_error)}")
+                import traceback
+                traceback.print_exc()
+                # Return with specific error
+                error_msg = str(db_error).replace(" ", "_")[:50]
+                return RedirectResponse(f"{frontend_url}/admin?gsv_error=db_error_{error_msg}")
             
             # Redirect to frontend with success
             print(f"[GSV OAuth Callback] Success! Redirecting to frontend...")
@@ -889,7 +899,8 @@ async def gsv_oauth_callback(
         print(f"[GSV OAuth Callback] EXCEPTION: {str(e)}")
         import traceback
         traceback.print_exc()
-        return RedirectResponse(f"{frontend_url}/admin?gsv_error=server_error")
+        error_msg = str(e).replace(" ", "_")[:50]
+        return RedirectResponse(f"{frontend_url}/admin?gsv_error=server_error_{error_msg}")
 
 
 async def refresh_google_token(account: dict) -> str:
