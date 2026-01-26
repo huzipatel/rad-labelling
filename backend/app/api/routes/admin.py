@@ -1,8 +1,12 @@
 """Admin routes for system management and reporting."""
 import uuid
+import asyncio
+import httpx
+import urllib.parse
 from typing import List, Optional
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_
 from pydantic import BaseModel
@@ -772,51 +776,72 @@ async def get_gsv_oauth_url(
 
 @router.get("/gsv-oauth-callback")
 async def gsv_oauth_callback(
-    code: str,
+    code: str = None,
     state: str = None,
     error: str = None
 ):
     """Handle Google OAuth callback - exchange code for tokens."""
     from app.core.config import settings
     
-    if error:
-        # Redirect to frontend with error
-        frontend_url = settings.CORS_ORIGINS[0] if settings.CORS_ORIGINS else "http://localhost:5173"
-        return RedirectResponse(f"{frontend_url}/admin?gsv_error={error}")
+    # Get frontend URL for redirects
+    frontend_url = settings.CORS_ORIGINS[0] if settings.CORS_ORIGINS else "http://localhost:5173"
     
-    # Exchange code for tokens
-    token_url = "https://oauth2.googleapis.com/token"
-    redirect_uri = settings.google_cloud_redirect_uri
-    print(f"[GSV OAuth Callback] Using redirect URI for token exchange: {redirect_uri}")
-    
-    async with httpx.AsyncClient() as client:
-        response = await client.post(token_url, data={
-            "client_id": settings.GOOGLE_CLIENT_ID,
-            "client_secret": settings.GOOGLE_CLIENT_SECRET,
-            "code": code,
-            "grant_type": "authorization_code",
-            "redirect_uri": redirect_uri
-        })
+    try:
+        if error:
+            print(f"[GSV OAuth Callback] OAuth error: {error}")
+            return RedirectResponse(f"{frontend_url}/admin?gsv_error={error}")
         
-        if response.status_code != 200:
-            frontend_url = settings.CORS_ORIGINS[0] if settings.CORS_ORIGINS else "http://localhost:5173"
-            return RedirectResponse(f"{frontend_url}/admin?gsv_error=token_exchange_failed")
+        if not code:
+            print("[GSV OAuth Callback] No code provided")
+            return RedirectResponse(f"{frontend_url}/admin?gsv_error=no_code")
         
-        tokens = response.json()
-        access_token = tokens.get("access_token")
-        refresh_token = tokens.get("refresh_token")
+        # Exchange code for tokens
+        token_url = "https://oauth2.googleapis.com/token"
+        redirect_uri = settings.google_cloud_redirect_uri
+        print(f"[GSV OAuth Callback] Using redirect URI for token exchange: {redirect_uri}")
+        print(f"[GSV OAuth Callback] GOOGLE_CLIENT_ID set: {bool(settings.GOOGLE_CLIENT_ID)}")
+        print(f"[GSV OAuth Callback] GOOGLE_CLIENT_SECRET set: {bool(settings.GOOGLE_CLIENT_SECRET)}")
         
-        # Get user info
-        userinfo_response = await client.get(
-            "https://www.googleapis.com/oauth2/v2/userinfo",
-            headers={"Authorization": f"Bearer {access_token}"}
-        )
-        
-        if userinfo_response.status_code == 200:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Step 1: Exchange code for tokens
+            response = await client.post(token_url, data={
+                "client_id": settings.GOOGLE_CLIENT_ID,
+                "client_secret": settings.GOOGLE_CLIENT_SECRET,
+                "code": code,
+                "grant_type": "authorization_code",
+                "redirect_uri": redirect_uri
+            })
+            
+            print(f"[GSV OAuth Callback] Token exchange response: {response.status_code}")
+            
+            if response.status_code != 200:
+                error_detail = response.text[:200] if response.text else "Unknown error"
+                print(f"[GSV OAuth Callback] Token exchange failed: {error_detail}")
+                return RedirectResponse(f"{frontend_url}/admin?gsv_error=token_exchange_failed")
+            
+            tokens = response.json()
+            access_token = tokens.get("access_token")
+            refresh_token = tokens.get("refresh_token")
+            
+            print(f"[GSV OAuth Callback] Got access token: {bool(access_token)}, refresh token: {bool(refresh_token)}")
+            
+            # Step 2: Get user info
+            userinfo_response = await client.get(
+                "https://www.googleapis.com/oauth2/v2/userinfo",
+                headers={"Authorization": f"Bearer {access_token}"}
+            )
+            
+            print(f"[GSV OAuth Callback] Userinfo response: {userinfo_response.status_code}")
+            
+            if userinfo_response.status_code != 200:
+                print(f"[GSV OAuth Callback] Userinfo failed: {userinfo_response.text[:200]}")
+                return RedirectResponse(f"{frontend_url}/admin?gsv_error=userinfo_failed")
+            
             userinfo = userinfo_response.json()
             email = userinfo.get("email")
+            print(f"[GSV OAuth Callback] Got email: {email}")
             
-            # Store the account with tokens
+            # Step 3: Store the account with tokens
             data = load_gsv_data()
             
             # Check if account exists, update or create
@@ -827,6 +852,7 @@ async def gsv_oauth_callback(
                 existing["refresh_token"] = refresh_token or existing.get("refresh_token")
                 existing["connected"] = True
                 existing["connected_at"] = datetime.utcnow().isoformat()
+                print(f"[GSV OAuth Callback] Updated existing account: {email}")
             else:
                 data["accounts"].append({
                     "id": str(uuid.uuid4()),
@@ -840,15 +866,19 @@ async def gsv_oauth_callback(
                     "connected_at": datetime.utcnow().isoformat(),
                     "created_at": datetime.utcnow().isoformat()
                 })
+                print(f"[GSV OAuth Callback] Created new account: {email}")
             
             save_gsv_data(data)
             
             # Redirect to frontend with success
-            frontend_url = settings.CORS_ORIGINS[0] if settings.CORS_ORIGINS else "http://localhost:5173"
+            print(f"[GSV OAuth Callback] Success! Redirecting to frontend...")
             return RedirectResponse(f"{frontend_url}/admin?gsv_connected={email}")
-        
-        frontend_url = settings.CORS_ORIGINS[0] if settings.CORS_ORIGINS else "http://localhost:5173"
-        return RedirectResponse(f"{frontend_url}/admin?gsv_error=userinfo_failed")
+    
+    except Exception as e:
+        print(f"[GSV OAuth Callback] EXCEPTION: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return RedirectResponse(f"{frontend_url}/admin?gsv_error=server_error")
 
 
 async def refresh_google_token(account: dict) -> str:
@@ -1001,8 +1031,3 @@ async def create_gsv_projects(
         "failed_projects": failed_projects,
         "total_keys": len([p for p in account.get("projects", []) if p.get("api_key")])
     }
-
-
-# Need to import for RedirectResponse
-from fastapi.responses import RedirectResponse
-import asyncio
