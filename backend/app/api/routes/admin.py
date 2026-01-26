@@ -852,37 +852,56 @@ async def gsv_oauth_callback(
             email = userinfo.get("email")
             print(f"[GSV OAuth Callback] Got email: {email}")
             
-            # Step 3: Store the account with tokens in database
-            from app.core.database import async_session_maker
+            # Step 3: Store the account with tokens in database using raw SQL
+            # (Avoiding ORM due to greenlet issues in OAuth callback context)
+            from app.core.database import engine
+            from sqlalchemy import text
             
             try:
-                async with async_session_maker() as db:
+                print(f"[GSV OAuth Callback] Saving account to database: {email}")
+                async with engine.begin() as conn:
                     # Check if account exists
-                    print(f"[GSV OAuth Callback] Checking for existing account: {email}")
-                    result = await db.execute(select(GSVAccount).where(GSVAccount.email == email))
-                    existing = result.scalar_one_or_none()
+                    result = await conn.execute(
+                        text("SELECT id FROM gsv_accounts WHERE email = :email"),
+                        {"email": email}
+                    )
+                    existing = result.fetchone()
                     
                     if existing:
-                        existing.access_token = access_token
-                        existing.refresh_token = refresh_token or existing.refresh_token
-                        existing.connected = True
-                        existing.connected_at = datetime.utcnow()
+                        # Update existing account
+                        await conn.execute(
+                            text("""
+                                UPDATE gsv_accounts 
+                                SET access_token = :access_token,
+                                    refresh_token = COALESCE(:refresh_token, refresh_token),
+                                    connected = TRUE,
+                                    connected_at = NOW(),
+                                    updated_at = NOW()
+                                WHERE email = :email
+                            """),
+                            {
+                                "email": email,
+                                "access_token": access_token,
+                                "refresh_token": refresh_token
+                            }
+                        )
                         print(f"[GSV OAuth Callback] Updated existing account: {email}")
                     else:
-                        new_account = GSVAccount(
-                            email=email,
-                            billing_id="",
-                            target_projects=30,
-                            access_token=access_token,
-                            refresh_token=refresh_token,
-                            connected=True,
-                            connected_at=datetime.utcnow()
+                        # Insert new account
+                        await conn.execute(
+                            text("""
+                                INSERT INTO gsv_accounts (id, email, billing_id, target_projects, access_token, refresh_token, connected, connected_at, created_at, updated_at)
+                                VALUES (gen_random_uuid(), :email, '', 30, :access_token, :refresh_token, TRUE, NOW(), NOW(), NOW())
+                            """),
+                            {
+                                "email": email,
+                                "access_token": access_token,
+                                "refresh_token": refresh_token
+                            }
                         )
-                        db.add(new_account)
                         print(f"[GSV OAuth Callback] Created new account: {email}")
-                    
-                    await db.commit()
-                    print(f"[GSV OAuth Callback] Database commit successful")
+                
+                print(f"[GSV OAuth Callback] Database save successful")
             except Exception as db_error:
                 print(f"[GSV OAuth Callback] DATABASE ERROR: {str(db_error)}")
                 import traceback
