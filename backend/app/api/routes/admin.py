@@ -498,43 +498,90 @@ from app.models.gsv_account import GSVAccount, GSVProject
 
 @router.get("/gsv-accounts")
 async def get_gsv_accounts(
-    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_admin)
 ):
     """Get all GSV accounts and their keys."""
-    from sqlalchemy.orm import selectinload
+    from app.core.database import engine
+    from sqlalchemy import text
     
-    # Use selectinload to eagerly load projects (required for async SQLAlchemy)
-    result = await db.execute(
-        select(GSVAccount)
-        .options(selectinload(GSVAccount.projects))
-        .order_by(GSVAccount.created_at)
-    )
-    accounts = result.scalars().all()
-    
-    print(f"[GSV Accounts] Found {len(accounts)} accounts in database")
-    
-    # Convert to dict format
-    accounts_data = []
-    total_projects = 0
-    total_keys = 0
-    
-    for account in accounts:
-        account_dict = account.to_dict()
-        accounts_data.append(account_dict)
-        total_projects += len(account_dict.get("projects", []))
-        total_keys += sum(1 for p in account_dict.get("projects", []) if p.get("api_key"))
-    
-    return {
-        "accounts": accounts_data,
-        "stats": {
-            "total_accounts": len(accounts_data),
-            "total_projects": total_projects,
-            "total_keys": total_keys,
-            "daily_capacity": total_keys * 25000,
-            "estimated_hours_for_1_7m": round(1700000 / (total_keys * 25000), 1) if total_keys > 0 else 0
+    try:
+        async with engine.begin() as conn:
+            # Get all accounts using raw SQL
+            accounts_result = await conn.execute(text("""
+                SELECT id, email, billing_id, target_projects, connected, connected_at, created_at
+                FROM gsv_accounts
+                ORDER BY created_at
+            """))
+            accounts_rows = accounts_result.fetchall()
+            
+            accounts_data = []
+            total_projects = 0
+            total_keys = 0
+            
+            for row in accounts_rows:
+                account_id = row[0]
+                
+                # Get projects for this account
+                projects_result = await conn.execute(text("""
+                    SELECT id, project_id, project_name, api_key, auto_created, created_at
+                    FROM gsv_projects
+                    WHERE account_id = :account_id
+                """), {"account_id": account_id})
+                projects_rows = projects_result.fetchall()
+                
+                projects = []
+                for proj_row in projects_rows:
+                    projects.append({
+                        "id": str(proj_row[0]),
+                        "project_id": proj_row[1],
+                        "project_name": proj_row[2],
+                        "api_key": proj_row[3],
+                        "auto_created": proj_row[4],
+                        "created_at": proj_row[5].isoformat() if proj_row[5] else None
+                    })
+                    if proj_row[3]:  # api_key
+                        total_keys += 1
+                
+                total_projects += len(projects)
+                
+                accounts_data.append({
+                    "id": str(row[0]),
+                    "email": row[1],
+                    "billing_id": row[2],
+                    "target_projects": row[3],
+                    "connected": row[4],
+                    "connected_at": row[5].isoformat() if row[5] else None,
+                    "created_at": row[6].isoformat() if row[6] else None,
+                    "projects": projects
+                })
+            
+            print(f"[GSV Accounts] Found {len(accounts_data)} accounts in database")
+            
+            return {
+                "accounts": accounts_data,
+                "stats": {
+                    "total_accounts": len(accounts_data),
+                    "total_projects": total_projects,
+                    "total_keys": total_keys,
+                    "daily_capacity": total_keys * 25000,
+                    "estimated_hours_for_1_7m": round(1700000 / (total_keys * 25000), 1) if total_keys > 0 else 0
+                }
+            }
+    except Exception as e:
+        print(f"[GSV Accounts] Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "accounts": [],
+            "stats": {
+                "total_accounts": 0,
+                "total_projects": 0,
+                "total_keys": 0,
+                "daily_capacity": 0,
+                "estimated_hours_for_1_7m": 0
+            },
+            "error": str(e)
         }
-    }
 
 
 @router.get("/gsv-accounts-debug")
