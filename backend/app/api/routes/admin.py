@@ -713,6 +713,31 @@ GOOGLE_CLOUD_SCOPES = [
 ]
 
 
+@router.get("/gsv-oauth-config")
+async def get_gsv_oauth_config(
+    current_user: User = Depends(require_admin)
+):
+    """Get current OAuth configuration for debugging."""
+    from app.core.config import settings
+    
+    redirect_uri = settings.google_cloud_redirect_uri
+    
+    return {
+        "backend_url": settings.BACKEND_URL or "(NOT SET - using localhost fallback)",
+        "redirect_uri": redirect_uri,
+        "google_client_id_set": bool(settings.GOOGLE_CLIENT_ID),
+        "google_client_secret_set": bool(settings.GOOGLE_CLIENT_SECRET),
+        "instructions": [
+            "1. Set BACKEND_URL in Render to your backend URL (e.g., https://your-backend.onrender.com)",
+            "2. Go to Google Cloud Console > APIs & Services > Credentials",
+            "3. Edit your OAuth 2.0 Client ID",
+            "4. Add this redirect URI to 'Authorized redirect URIs':",
+            f"   {redirect_uri}",
+            "5. Save and wait a few minutes for Google to propagate the changes"
+        ]
+    }
+
+
 @router.get("/gsv-oauth-url")
 async def get_gsv_oauth_url(
     current_user: User = Depends(require_admin)
@@ -723,10 +748,16 @@ async def get_gsv_oauth_url(
     if not settings.GOOGLE_CLIENT_ID:
         raise HTTPException(status_code=400, detail="Google OAuth not configured. Set GOOGLE_CLIENT_ID in environment.")
     
+    if not settings.BACKEND_URL:
+        raise HTTPException(status_code=400, detail="BACKEND_URL not configured. Set it in Render environment (e.g., https://your-backend.onrender.com)")
+    
+    redirect_uri = settings.google_cloud_redirect_uri
+    print(f"[GSV OAuth] Using redirect URI: {redirect_uri}")
+    
     # Build OAuth URL
     params = {
         "client_id": settings.GOOGLE_CLIENT_ID,
-        "redirect_uri": settings.GOOGLE_CLOUD_REDIRECT_URI,
+        "redirect_uri": redirect_uri,
         "response_type": "code",
         "scope": " ".join(GOOGLE_CLOUD_SCOPES),
         "access_type": "offline",  # Get refresh token
@@ -736,7 +767,7 @@ async def get_gsv_oauth_url(
     
     oauth_url = f"https://accounts.google.com/o/oauth2/v2/auth?{urllib.parse.urlencode(params)}"
     
-    return {"oauth_url": oauth_url}
+    return {"oauth_url": oauth_url, "redirect_uri": redirect_uri}
 
 
 @router.get("/gsv-oauth-callback")
@@ -755,6 +786,8 @@ async def gsv_oauth_callback(
     
     # Exchange code for tokens
     token_url = "https://oauth2.googleapis.com/token"
+    redirect_uri = settings.google_cloud_redirect_uri
+    print(f"[GSV OAuth Callback] Using redirect URI for token exchange: {redirect_uri}")
     
     async with httpx.AsyncClient() as client:
         response = await client.post(token_url, data={
@@ -762,7 +795,7 @@ async def gsv_oauth_callback(
             "client_secret": settings.GOOGLE_CLIENT_SECRET,
             "code": code,
             "grant_type": "authorization_code",
-            "redirect_uri": settings.GOOGLE_CLOUD_REDIRECT_URI
+            "redirect_uri": redirect_uri
         })
         
         if response.status_code != 200:

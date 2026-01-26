@@ -29,9 +29,22 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_SECRET: str = ""
     GOOGLE_REDIRECT_URI: str = "http://localhost:8000/api/v1/auth/google/callback"
     
-    # Google Cloud OAuth (for GSV project management - needs cloud-platform scope)
-    # Use the same client ID/secret but with different redirect URI
-    GOOGLE_CLOUD_REDIRECT_URI: str = "http://localhost:8000/api/v1/admin/gsv-oauth-callback"
+    # Backend URL (used for OAuth callbacks - set this in Render!)
+    # Example: https://your-backend-service.onrender.com
+    BACKEND_URL: str = ""
+    
+    @property
+    def google_cloud_redirect_uri(self) -> str:
+        """
+        Get the Google Cloud OAuth redirect URI.
+        Uses BACKEND_URL if set, otherwise falls back to localhost for local dev.
+        """
+        if self.BACKEND_URL:
+            # Use the configured backend URL
+            base = self.BACKEND_URL.rstrip("/")
+            return f"{base}/api/v1/admin/gsv-oauth-callback"
+        # Fallback for local development
+        return "http://localhost:8000/api/v1/admin/gsv-oauth-callback"
     
     # Google Street View API
     # Single key (backwards compatible)

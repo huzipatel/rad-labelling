@@ -103,6 +103,12 @@ export default function AdminPage() {
   const [applyingKeys, setApplyingKeys] = useState(false)
   const [creatingProjects, setCreatingProjects] = useState<string | null>(null)
   const [projectCountToCreate, setProjectCountToCreate] = useState(5)
+  const [oauthConfig, setOauthConfig] = useState<{
+    backend_url: string
+    redirect_uri: string
+    google_client_id_set: boolean
+    instructions: string[]
+  } | null>(null)
   
   const [formData, setFormData] = useState({
     email: '',
@@ -340,6 +346,14 @@ export default function AdminPage() {
       setAllKeysString('')
     }
     
+    try {
+      const configRes = await adminApi.getGsvOAuthConfig()
+      setOauthConfig(configRes.data)
+    } catch (error) {
+      console.error('Failed to load OAuth config:', error)
+      setOauthConfig(null)
+    }
+    
     setGsvLoading(false)
   }
 
@@ -409,12 +423,20 @@ export default function AdminPage() {
   }
 
   const handleConnectGoogleAccount = async () => {
+    // Check if OAuth is configured
+    if (oauthConfig?.backend_url.includes('NOT SET')) {
+      alert('Cannot sign in with Google: BACKEND_URL is not configured in Render.\n\nPlease add the environment variable:\nBACKEND_URL=https://your-backend.onrender.com')
+      return
+    }
+    
     try {
       const result = await adminApi.getGsvOAuthUrl()
+      console.log('OAuth URL redirect_uri:', result.data.redirect_uri)
       // Open OAuth URL in a new window or redirect
       window.location.href = result.data.oauth_url
     } catch (error: any) {
-      alert(error.response?.data?.detail || 'Failed to get OAuth URL. Make sure GOOGLE_CLIENT_ID is configured.')
+      const errorDetail = error.response?.data?.detail || 'Failed to get OAuth URL.'
+      alert(`${errorDetail}\n\nMake sure:\n1. GOOGLE_CLIENT_ID is configured\n2. BACKEND_URL is set correctly\n3. The redirect URI is added to Google Cloud Console`)
     }
   }
 
@@ -754,6 +776,83 @@ export default function AdminPage() {
                   </span>
                   <span className="stat-card__label">Time for 1.7M</span>
                 </div>
+              </div>
+            )}
+
+            {/* OAuth Config Status */}
+            {oauthConfig && (
+              <div style={{ 
+                background: oauthConfig.backend_url.includes('NOT SET') 
+                  ? 'rgba(239, 68, 68, 0.1)' 
+                  : 'rgba(16, 185, 129, 0.1)', 
+                border: `1px solid ${oauthConfig.backend_url.includes('NOT SET') 
+                  ? 'rgba(239, 68, 68, 0.3)' 
+                  : 'rgba(16, 185, 129, 0.3)'}`,
+                borderRadius: '8px',
+                padding: '16px',
+                marginBottom: '16px'
+              }}>
+                <h3 style={{ 
+                  color: oauthConfig.backend_url.includes('NOT SET') ? '#ef4444' : '#10b981', 
+                  marginBottom: '12px', 
+                  fontSize: '1rem' 
+                }}>
+                  {oauthConfig.backend_url.includes('NOT SET') ? '⚠️ OAuth Not Configured' : '✅ OAuth Configuration'}
+                </h3>
+                
+                {oauthConfig.backend_url.includes('NOT SET') ? (
+                  <div>
+                    <p style={{ color: '#ef4444', marginBottom: '8px' }}>
+                      <strong>BACKEND_URL</strong> is not set! Google Sign-in will not work.
+                    </p>
+                    <p style={{ color: '#666' }}>
+                      Add this environment variable in Render: <code>BACKEND_URL=https://your-backend.onrender.com</code>
+                    </p>
+                  </div>
+                ) : (
+                  <div>
+                    <p style={{ marginBottom: '8px' }}>
+                      <strong>Backend URL:</strong> <code style={{ color: '#10b981' }}>{oauthConfig.backend_url}</code>
+                    </p>
+                    <p style={{ marginBottom: '8px' }}>
+                      <strong>Redirect URI:</strong> <code style={{ 
+                        background: '#0d1117', 
+                        padding: '4px 8px', 
+                        borderRadius: '4px',
+                        color: '#58a6ff',
+                        fontSize: '0.85rem'
+                      }}>{oauthConfig.redirect_uri}</code>
+                      <button 
+                        onClick={() => {
+                          navigator.clipboard.writeText(oauthConfig.redirect_uri)
+                          alert('Redirect URI copied to clipboard!')
+                        }}
+                        style={{ 
+                          marginLeft: '8px', 
+                          padding: '4px 8px', 
+                          background: '#333', 
+                          color: '#fff', 
+                          border: 'none', 
+                          borderRadius: '4px',
+                          cursor: 'pointer',
+                          fontSize: '0.75rem'
+                        }}
+                      >
+                        📋 Copy
+                      </button>
+                    </p>
+                    <details style={{ marginTop: '8px' }}>
+                      <summary style={{ cursor: 'pointer', color: '#888', fontSize: '0.9rem' }}>
+                        📝 Google Cloud Console Setup Instructions
+                      </summary>
+                      <ol style={{ marginLeft: '20px', color: '#666', marginTop: '8px', fontSize: '0.9rem' }}>
+                        {oauthConfig.instructions.map((instruction, i) => (
+                          <li key={i} style={{ marginBottom: '4px' }}>{instruction}</li>
+                        ))}
+                      </ol>
+                    </details>
+                  </div>
+                )}
               </div>
             )}
 
