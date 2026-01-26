@@ -702,11 +702,11 @@ async def apply_gsv_keys_to_config(
 import urllib.parse
 
 # Scopes needed for creating projects and API keys
+# Note: serviceusage scope requires app verification, but cloud-platform covers it
 GOOGLE_CLOUD_SCOPES = [
-    "https://www.googleapis.com/auth/cloud-platform",
-    "https://www.googleapis.com/auth/cloudplatformprojects", 
-    "https://www.googleapis.com/auth/serviceusage",
-    "https://www.googleapis.com/auth/cloud-billing",
+    "https://www.googleapis.com/auth/cloud-platform",  # Broad scope that covers most APIs
+    "https://www.googleapis.com/auth/cloudplatformprojects",  # For creating projects
+    "https://www.googleapis.com/auth/cloud-billing",  # For billing (optional)
     "openid",
     "email",
     "profile"
