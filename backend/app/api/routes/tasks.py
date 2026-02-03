@@ -2374,17 +2374,75 @@ async def get_tasks_with_images(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_manager)
 ):
-    """Get all tasks that have downloaded images (for sample task creation)."""
-    result = await db.execute(
+    """Get all tasks that have downloaded images (for sample task creation).
+    
+    This queries the actual GSVImage table to find tasks with images,
+    not just relying on the images_downloaded counter which may be out of sync.
+    """
+    from app.models.gsv_image import GSVImage
+    
+    # First, get task IDs that actually have images in the database
+    # by finding location_type_ids that have images
+    tasks_with_actual_images = await db.execute(
         select(Task)
         .options(
             selectinload(Task.location_type),
             selectinload(Task.assignee)
         )
-        .where(Task.images_downloaded > 0)
         .order_by(Task.created_at.desc())
     )
-    tasks = result.scalars().all()
+    all_tasks = tasks_with_actual_images.scalars().all()
+    
+    # Filter to tasks that actually have images
+    result_tasks = []
+    for task in all_tasks:
+        # Check if this task has actual images by querying GSVImage
+        # Build location query for this task
+        base_query = select(Location.id).where(Location.location_type_id == task.location_type_id)
+        
+        if task.is_sample and task.sample_location_ids:
+            # Sample task - check specific location IDs
+            location_query = select(Location.id).where(
+                Location.id.in_([uuid.UUID(lid) for lid in task.sample_location_ids])
+            )
+        elif task.group_field and task.group_field.startswith("original_"):
+            original_key = task.group_field.replace("original_", "")
+            location_query = base_query.where(
+                text(f"original_data->>'{original_key}' = :group_value")
+            ).params(group_value=task.group_value)
+        elif task.group_field == "council":
+            location_query = base_query.where(Location.council == task.group_value)
+        elif task.group_field == "combined_authority":
+            location_query = base_query.where(Location.combined_authority == task.group_value)
+        elif task.group_field == "road_classification":
+            location_query = base_query.where(Location.road_classification == task.group_value)
+        elif task.council:
+            location_query = base_query.where(Location.council == task.council)
+        else:
+            location_query = base_query
+        
+        # Check if any of these locations have images
+        loc_result = await db.execute(location_query.limit(1000))  # Limit for performance
+        location_ids = [row[0] for row in loc_result.fetchall()]
+        
+        if not location_ids:
+            continue
+        
+        # Count actual images
+        img_count_result = await db.execute(
+            select(func.count(GSVImage.id)).where(GSVImage.location_id.in_(location_ids))
+        )
+        actual_image_count = img_count_result.scalar() or 0
+        
+        if actual_image_count > 0:
+            # Update the task's images_downloaded if out of sync
+            if task.images_downloaded != actual_image_count:
+                task.images_downloaded = actual_image_count
+            
+            result_tasks.append(task)
+    
+    # Commit any updates
+    await db.commit()
     
     return [
         TaskResponse(
@@ -2410,6 +2468,6 @@ async def get_tasks_with_images(
             started_at=t.started_at,
             completed_at=t.completed_at
         )
-        for t in tasks
+        for t in result_tasks
     ]
 
