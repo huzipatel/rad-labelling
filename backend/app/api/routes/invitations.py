@@ -1,7 +1,7 @@
 """User invitation management routes."""
 import uuid
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +13,11 @@ from app.core.config import settings
 from app.models.user import User, Invitation
 from app.api.deps import require_manager, require_admin
 from app.services.email_service import email_service
+
+
+def utc_now() -> datetime:
+    """Return current UTC time as timezone-aware datetime."""
+    return datetime.now(timezone.utc)
 
 
 router = APIRouter(prefix="/invitations", tags=["Invitations"])
@@ -109,7 +114,7 @@ async def create_invitation(
     
     # Create invitation token
     token = secrets.token_urlsafe(32)
-    expires_at = datetime.utcnow() + timedelta(days=7)
+    expires_at = utc_now() + timedelta(days=7)
     
     invitation = Invitation(
         email=request.email,
@@ -127,7 +132,8 @@ async def create_invitation(
     await db.refresh(invitation)
     
     # Send invitation email
-    frontend_url = settings.CORS_ORIGINS[0] if settings.CORS_ORIGINS else "http://localhost:5173"
+    # Use FRONTEND_URL if set, otherwise fall back to first CORS origin
+    frontend_url = settings.FRONTEND_URL or (settings.CORS_ORIGINS[0] if settings.CORS_ORIGINS else "http://localhost:5173")
     invitation_url = f"{frontend_url}/accept-invite?token={token}"
     
     email_sent = email_service.send_invitation(
@@ -221,7 +227,7 @@ async def validate_invitation(
             detail="This invitation has already been used"
         )
     
-    if invitation.expires_at < datetime.utcnow():
+    if invitation.expires_at < utc_now():
         invitation.status = "expired"
         await db.commit()
         raise HTTPException(
@@ -276,7 +282,7 @@ async def accept_invitation(
             detail="This invitation has already been used"
         )
     
-    if invitation.expires_at < datetime.utcnow():
+    if invitation.expires_at < utc_now():
         invitation.status = "expired"
         await db.commit()
         raise HTTPException(
@@ -310,7 +316,7 @@ async def accept_invitation(
     
     # Mark invitation as accepted
     invitation.status = "accepted"
-    invitation.accepted_at = datetime.utcnow()
+    invitation.accepted_at = utc_now()
     
     await db.commit()
     
@@ -377,11 +383,12 @@ async def resend_invitation(
     
     # Generate new token and extend expiration
     invitation.token = secrets.token_urlsafe(32)
-    invitation.expires_at = datetime.utcnow() + timedelta(days=7)
+    invitation.expires_at = utc_now() + timedelta(days=7)
     await db.commit()
     
     # Resend email
-    frontend_url = settings.CORS_ORIGINS[0] if settings.CORS_ORIGINS else "http://localhost:5173"
+    # Use FRONTEND_URL if set, otherwise fall back to first CORS origin
+    frontend_url = settings.FRONTEND_URL or (settings.CORS_ORIGINS[0] if settings.CORS_ORIGINS else "http://localhost:5173")
     invitation_url = f"{frontend_url}/accept-invite?token={invitation.token}"
     
     email_service.send_invitation(

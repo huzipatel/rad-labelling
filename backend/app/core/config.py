@@ -111,6 +111,10 @@ class Settings(BaseSettings):
     # CORS
     CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:5173"]
     
+    # Frontend URL (for generating invitation links, etc.)
+    # Set this in production! e.g., https://your-frontend.onrender.com
+    FRONTEND_URL: str = ""
+    
     # File Upload
     MAX_UPLOAD_SIZE: int = 200 * 1024 * 1024  # 200MB for spreadsheets
     MAX_SHAPEFILE_SIZE: int = 10 * 1024 * 1024 * 1024  # 10GB for shapefiles/geopackages
