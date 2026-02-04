@@ -287,6 +287,9 @@ class GSVDownloader:
         """
         Download images for a single location and save to database.
         
+        IMPORTANT: This method downloads images to storage AND records them in the
+        GSVImage database table. Both steps must succeed for the image to be usable.
+        
         Args:
             db: Database session
             location_id: Location UUID
@@ -297,7 +300,7 @@ class GSVDownloader:
             council: Council name for folder organization
         
         Returns:
-            Number of images downloaded
+            Number of images downloaded and saved to database
         """
         from app.models.gsv_image import GSVImage
         
@@ -310,7 +313,12 @@ class GSVDownloader:
             council=council
         )
         
-        images_downloaded = 0
+        if not results:
+            return 0
+        
+        images_saved = 0
+        gsv_images_to_add = []
+        
         for result in results:
             gsv_image = GSVImage(
                 location_id=result["location_id"],
@@ -320,68 +328,32 @@ class GSVDownloader:
                 capture_date=result["capture_date"],
                 is_user_snapshot=False
             )
-            db.add(gsv_image)
-            images_downloaded += 1
+            gsv_images_to_add.append(gsv_image)
         
-        if images_downloaded > 0:
+        # Try to save all images to database
+        try:
+            for gsv_image in gsv_images_to_add:
+                db.add(gsv_image)
             await db.commit()
+            images_saved = len(gsv_images_to_add)
+            print(f"[GSV] Saved {images_saved} images to database for location {identifier}")
+        except Exception as e:
+            # Database save failed - log the error
+            # Note: Images are still in storage but not tracked in DB
+            # This creates the mismatch that can cause issues elsewhere
+            print(f"[GSV] ERROR: Failed to save images to database for {identifier}: {e}")
+            print(f"[GSV] WARNING: {len(results)} images uploaded to storage but NOT recorded in database!")
+            await db.rollback()
+            # Return 0 to indicate no images were successfully processed
+            # This prevents the task counter from being incremented incorrectly
+            return 0
         
-        return images_downloaded
-
-    async def download_for_task(
-        self,
-        task_id: UUID,
-        locations: list,
-        location_type: str = "unspecified",
-        council: str = "unspecified",
-        progress_callback=None
-    ) -> dict:
-        """
-        Download images for all locations in a task.
-        
-        Args:
-            task_id: Task ID
-            locations: List of location dicts with id, identifier, lat, lng
-            location_type: Location type name
-            council: Council name
-            progress_callback: Optional callback(downloaded, total)
-        
-        Returns:
-            Summary dict with success/failure counts
-        """
-        total = len(locations)
-        downloaded = 0
-        failed = 0
-        
-        for loc in locations:
-            try:
-                results = await self.download_all_headings(
-                    location_id=loc["id"],
-                    identifier=loc["identifier"],
-                    latitude=loc["latitude"],
-                    longitude=loc["longitude"],
-                    location_type=location_type,
-                    council=loc.get("council", council)
-                )
-                
-                if results:
-                    downloaded += len(results)
-                else:
-                    failed += 1
-                
-                if progress_callback:
-                    await progress_callback(downloaded, total * 4)
-                
-                # Rate limiting - be nice to the API
-                await asyncio.sleep(0.2)
-                
-            except Exception as e:
-                print(f"[GSV] Error downloading images for {loc['identifier']}: {e}")
-                failed += 1
-        
-        return {
-            "task_id": str(task_id),
-            "total_locations": total,
-            "images_downloaded": downloaded,
-            "locations_failed": failed
-        }
+        return images_saved
+    
+    # NOTE: download_for_task is DEPRECATED - it downloads images but does NOT save
+    # them to the database, causing mismatches. Use download_images_for_location instead.
+    # Keeping this method commented out to prevent accidental use.
+    #
+    # async def download_for_task(self, task_id, locations, ...):
+    #     """DEPRECATED: Does not save to database. Use download_images_for_location."""
+    #     pass

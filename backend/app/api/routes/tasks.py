@@ -1125,6 +1125,89 @@ async def sync_task_image_counts(
     }
 
 
+@router.post("/stats/diagnose-mismatch")
+async def diagnose_image_mismatch(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_manager)
+):
+    """
+    Diagnose the mismatch between task.images_downloaded counter and actual GSVImage records.
+    
+    This helps identify:
+    1. Tasks where counter is high but GSVImage records are low (images in storage, not DB)
+    2. Tasks where counter is low but GSVImage records exist (counter not updated)
+    """
+    from app.models.gsv_image import GSVImage
+    
+    # Get all tasks
+    result = await db.execute(select(Task).order_by(Task.created_at.desc()).limit(50))
+    tasks = result.scalars().all()
+    
+    mismatches = []
+    
+    for task in tasks:
+        # Build location query
+        base_query = select(Location.id).where(Location.location_type_id == task.location_type_id)
+        
+        if task.is_sample and task.sample_location_ids:
+            location_query = select(Location.id).where(
+                Location.id.in_([uuid.UUID(lid) for lid in task.sample_location_ids])
+            )
+        elif task.group_field == "council" and task.group_value:
+            location_query = base_query.where(Location.council == task.group_value)
+        elif task.group_field == "combined_authority" and task.group_value:
+            location_query = base_query.where(Location.combined_authority == task.group_value)
+        elif task.council:
+            location_query = base_query.where(Location.council == task.council)
+        else:
+            location_query = base_query
+        
+        # Get location IDs
+        loc_result = await db.execute(location_query.limit(10000))
+        location_ids = [row[0] for row in loc_result.fetchall()]
+        
+        if not location_ids:
+            continue
+        
+        # Count actual GSVImage records
+        img_result = await db.execute(
+            select(func.count(GSVImage.id)).where(GSVImage.location_id.in_(location_ids))
+        )
+        actual_db_count = img_result.scalar() or 0
+        
+        task_name = task.name or task.group_value or task.council
+        counter_value = task.images_downloaded or 0
+        
+        if counter_value != actual_db_count:
+            mismatch_type = "unknown"
+            if counter_value > actual_db_count:
+                mismatch_type = "counter_higher"  # Images in storage but not DB
+            elif actual_db_count > counter_value:
+                mismatch_type = "db_higher"  # Counter not updated
+            
+            mismatches.append({
+                "task_id": str(task.id),
+                "task_name": task_name,
+                "counter_images_downloaded": counter_value,
+                "actual_gsv_image_records": actual_db_count,
+                "difference": counter_value - actual_db_count,
+                "mismatch_type": mismatch_type,
+                "locations_count": len(location_ids),
+                "status": task.status
+            })
+    
+    return {
+        "total_tasks_checked": len(tasks),
+        "mismatches_found": len(mismatches),
+        "mismatches": mismatches,
+        "explanation": {
+            "counter_higher": "Images may exist in storage (GCS/local) but were NOT saved to GSVImage table. "
+                            "This happens when db.commit() fails after upload, or if old download code was used.",
+            "db_higher": "GSVImage records exist but counter wasn't updated. Run sync-image-counts to fix."
+        }
+    }
+
+
 # NOTE: These routes MUST be before /{task_id} to avoid route matching issues
 @router.get("/with-images-simple")
 async def get_tasks_with_images_simple(
