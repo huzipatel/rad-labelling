@@ -1125,6 +1125,154 @@ async def sync_task_image_counts(
     }
 
 
+@router.post("/stats/reconcile-images")
+async def reconcile_images_from_storage(
+    dry_run: bool = True,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_manager)
+):
+    """
+    Reconcile GSVImage database with actual files in storage (GCS or local).
+    
+    This scans the storage for image files and creates missing GSVImage records.
+    
+    Args:
+        dry_run: If True, only report what would be done. If False, actually create records.
+    
+    Image filename format: {identifier}_{heading}_{date}.jpg
+    Example: BUS001_90_202401.jpg
+    """
+    from app.models.gsv_image import GSVImage
+    from app.services.gcs_storage import GCSStorage
+    import re
+    
+    storage = GCSStorage()
+    
+    print(f"[Reconcile] Starting reconciliation (dry_run={dry_run})...")
+    
+    # Get all image files from storage
+    try:
+        all_files = await storage.list_files("")
+        image_files = [f for f in all_files if f.endswith('.jpg') and '/images/' in f]
+        print(f"[Reconcile] Found {len(image_files)} image files in storage")
+    except Exception as e:
+        return {
+            "error": f"Failed to list storage files: {str(e)}",
+            "message": "Check storage configuration (GCS credentials or local path)"
+        }
+    
+    if not image_files:
+        return {
+            "message": "No image files found in storage",
+            "files_scanned": 0,
+            "records_created": 0
+        }
+    
+    # Get all existing GSVImage records (gcs_path)
+    existing_result = await db.execute(select(GSVImage.gcs_path))
+    existing_paths = {row[0] for row in existing_result.fetchall()}
+    print(f"[Reconcile] Found {len(existing_paths)} existing GSVImage records")
+    
+    # Get all locations indexed by identifier
+    locations_result = await db.execute(select(Location.id, Location.identifier))
+    location_map = {row[1]: row[0] for row in locations_result.fetchall()}
+    print(f"[Reconcile] Loaded {len(location_map)} locations")
+    
+    # Parse filename pattern: {identifier}_{heading}_{date}.jpg
+    # Example: BUS001_90_202401.jpg or ATCO-1234_180_unknown.jpg
+    filename_pattern = re.compile(r'^(.+)_(\d+)_(\d+|unknown)\.jpg$')
+    
+    missing_in_db = []
+    parse_errors = []
+    location_not_found = []
+    already_exists = 0
+    
+    for file_path in image_files:
+        # Check if already in database
+        if file_path in existing_paths:
+            already_exists += 1
+            continue
+        
+        # Extract filename from path
+        filename = file_path.split('/')[-1]
+        
+        # Parse filename
+        match = filename_pattern.match(filename)
+        if not match:
+            parse_errors.append({"file": file_path, "reason": "filename pattern mismatch"})
+            continue
+        
+        identifier = match.group(1)
+        heading = int(match.group(2))
+        date_str = match.group(3)
+        
+        # Look up location
+        location_id = location_map.get(identifier)
+        if not location_id:
+            location_not_found.append({"file": file_path, "identifier": identifier})
+            continue
+        
+        # Parse capture date
+        capture_date = None
+        if date_str != "unknown" and len(date_str) >= 6:
+            try:
+                from datetime import date
+                year = int(date_str[:4])
+                month = int(date_str[4:6])
+                capture_date = date(year, month, 1)
+            except:
+                pass
+        
+        # Build the URL
+        gcs_url = storage.get_public_url(file_path)
+        
+        missing_in_db.append({
+            "gcs_path": file_path,
+            "gcs_url": gcs_url,
+            "location_id": location_id,
+            "identifier": identifier,
+            "heading": heading,
+            "capture_date": capture_date
+        })
+    
+    print(f"[Reconcile] Found {len(missing_in_db)} images in storage but not in database")
+    
+    records_created = 0
+    
+    if not dry_run and missing_in_db:
+        print(f"[Reconcile] Creating {len(missing_in_db)} GSVImage records...")
+        
+        for item in missing_in_db:
+            gsv_image = GSVImage(
+                location_id=item["location_id"],
+                heading=item["heading"],
+                gcs_path=item["gcs_path"],
+                gcs_url=item["gcs_url"],
+                capture_date=item["capture_date"],
+                is_user_snapshot=False
+            )
+            db.add(gsv_image)
+            records_created += 1
+        
+        await db.commit()
+        print(f"[Reconcile] Created {records_created} GSVImage records")
+    
+    return {
+        "dry_run": dry_run,
+        "storage_files_scanned": len(image_files),
+        "existing_db_records": len(existing_paths),
+        "already_in_db": already_exists,
+        "missing_in_db": len(missing_in_db),
+        "records_created": records_created if not dry_run else 0,
+        "parse_errors": len(parse_errors),
+        "location_not_found": len(location_not_found),
+        "sample_missing": missing_in_db[:10] if missing_in_db else [],
+        "sample_parse_errors": parse_errors[:10] if parse_errors else [],
+        "sample_location_not_found": location_not_found[:10] if location_not_found else [],
+        "message": f"{'DRY RUN: Would create' if dry_run else 'Created'} {len(missing_in_db) if dry_run else records_created} GSVImage records"
+    }
+
+
 @router.post("/stats/diagnose-mismatch")
 async def diagnose_image_mismatch(
     db: AsyncSession = Depends(get_db),
