@@ -1126,6 +1126,32 @@ async def sync_task_image_counts(
 
 
 # NOTE: These routes MUST be before /{task_id} to avoid route matching issues
+@router.get("/with-images-simple")
+async def get_tasks_with_images_simple(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_manager)
+):
+    """Simplified endpoint - just returns tasks with images_downloaded > 0."""
+    print("[with-images-simple] Starting...")
+    
+    result = await db.execute(
+        select(Task.id, Task.name, Task.council, Task.group_value, Task.images_downloaded)
+        .where(Task.images_downloaded > 0)
+    )
+    tasks = result.fetchall()
+    
+    print(f"[with-images-simple] Found {len(tasks)} tasks")
+    
+    return [
+        {
+            "id": str(t.id),
+            "name": t.name or t.group_value or t.council,
+            "images_downloaded": t.images_downloaded
+        }
+        for t in tasks
+    ]
+
+
 @router.get("/debug/image-stats")
 async def debug_image_stats(
     db: AsyncSession = Depends(get_db),
@@ -1217,115 +1243,57 @@ async def get_tasks_with_images(
 ):
     """Get all tasks that have downloaded images (for sample task creation).
     
-    This queries the actual GSVImage table to find tasks with images,
-    not just relying on the images_downloaded counter which may be out of sync.
+    Simple version: returns tasks where images_downloaded > 0.
     """
-    from app.models.gsv_image import GSVImage
+    print("[get_tasks_with_images] Starting query...")
     
     try:
-        # First check if there are ANY images in the database at all
-        total_images_result = await db.execute(select(func.count(GSVImage.id)))
-        total_images = total_images_result.scalar() or 0
-        
-        if total_images == 0:
-            print("[get_tasks_with_images] WARNING: GSVImage table is empty - no images have been downloaded")
-            # Return empty list - no images exist
-            return []
-        
-        print(f"[get_tasks_with_images] Found {total_images} total images in GSVImage table")
-        
-        # Get all tasks
-        tasks_with_actual_images = await db.execute(
+        # Simple query: get tasks where images_downloaded > 0
+        result = await db.execute(
             select(Task)
             .options(
                 selectinload(Task.location_type),
                 selectinload(Task.assignee)
             )
+            .where(Task.images_downloaded > 0)
             .order_by(Task.created_at.desc())
         )
-        all_tasks = tasks_with_actual_images.scalars().all()
+        tasks = result.scalars().all()
         
-        print(f"[get_tasks_with_images] Checking {len(all_tasks)} tasks for images")
+        print(f"[get_tasks_with_images] Found {len(tasks)} tasks with images_downloaded > 0")
         
-        # Filter to tasks that actually have images
-        result_tasks = []
-        for task in all_tasks:
-            # Check if this task has actual images by querying GSVImage
-            # Build location query for this task
-            base_query = select(Location.id).where(Location.location_type_id == task.location_type_id)
-            
-            if task.is_sample and task.sample_location_ids:
-                # Sample task - check specific location IDs
-                location_query = select(Location.id).where(
-                    Location.id.in_([uuid.UUID(lid) for lid in task.sample_location_ids])
-                )
-            elif task.group_field and task.group_field.startswith("original_"):
-                original_key = task.group_field.replace("original_", "")
-                location_query = base_query.where(
-                    text(f"original_data->>'{original_key}' = :group_value")
-                ).params(group_value=task.group_value)
-            elif task.group_field == "council":
-                location_query = base_query.where(Location.council == task.group_value)
-            elif task.group_field == "combined_authority":
-                location_query = base_query.where(Location.combined_authority == task.group_value)
-            elif task.group_field == "road_classification":
-                location_query = base_query.where(Location.road_classification == task.group_value)
-            elif task.council:
-                location_query = base_query.where(Location.council == task.council)
-            else:
-                location_query = base_query
-            
-            # Check if any of these locations have images
-            loc_result = await db.execute(location_query.limit(1000))  # Limit for performance
-            location_ids = [row[0] for row in loc_result.fetchall()]
-            
-            if not location_ids:
+        response = []
+        for t in tasks:
+            try:
+                response.append(TaskResponse(
+                    id=str(t.id),
+                    location_type_id=str(t.location_type_id),
+                    location_type_name=t.location_type.display_name if t.location_type else "Unknown",
+                    council=t.council,
+                    group_field=t.group_field,
+                    group_value=t.group_value,
+                    name=t.name,
+                    assigned_to=str(t.assigned_to) if t.assigned_to else None,
+                    assignee_name=t.assignee.name if t.assignee else None,
+                    status=t.status,
+                    total_locations=t.total_locations,
+                    completed_locations=t.completed_locations,
+                    failed_locations=t.failed_locations,
+                    images_downloaded=t.images_downloaded,
+                    total_images=t.total_images,
+                    completion_percentage=t.completion_percentage,
+                    download_progress=t.download_progress,
+                    created_at=t.created_at,
+                    assigned_at=t.assigned_at,
+                    started_at=t.started_at,
+                    completed_at=t.completed_at
+                ))
+            except Exception as task_err:
+                print(f"[get_tasks_with_images] Error processing task {t.id}: {task_err}")
                 continue
-            
-            # Count actual images
-            img_count_result = await db.execute(
-                select(func.count(GSVImage.id)).where(GSVImage.location_id.in_(location_ids))
-            )
-            actual_image_count = img_count_result.scalar() or 0
-            
-            if actual_image_count > 0:
-                # Update the task's images_downloaded if out of sync
-                if task.images_downloaded != actual_image_count:
-                    task.images_downloaded = actual_image_count
-                
-                result_tasks.append(task)
         
-        print(f"[get_tasks_with_images] Found {len(result_tasks)} tasks with actual images")
-        
-        # Commit any updates
-        await db.commit()
-        
-        return [
-            TaskResponse(
-                id=str(t.id),
-                location_type_id=str(t.location_type_id),
-                location_type_name=t.location_type.display_name if t.location_type else "Unknown",
-                council=t.council,
-                group_field=t.group_field,
-                group_value=t.group_value,
-                name=t.name,
-                assigned_to=str(t.assigned_to) if t.assigned_to else None,
-                assignee_name=t.assignee.name if t.assignee else None,
-                status=t.status,
-                total_locations=t.total_locations,
-                completed_locations=t.completed_locations,
-                failed_locations=t.failed_locations,
-                images_downloaded=t.images_downloaded,
-                total_images=t.total_images,
-                completion_percentage=t.completion_percentage,
-                download_progress=t.download_progress,
-                created_at=t.created_at,
-                assigned_at=t.assigned_at,
-                started_at=t.started_at,
-                completed_at=t.completed_at
-            )
-            for t in result_tasks
-        ]
+        print(f"[get_tasks_with_images] Returning {len(response)} tasks")
+        return response
     
     except Exception as e:
         print(f"[get_tasks_with_images] ERROR: {type(e).__name__}: {e}")
