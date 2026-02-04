@@ -7,10 +7,11 @@ echo "Redis URL: ${REDIS_URL:-redis://localhost:6379/0}"
 echo "Running database migrations..."
 alembic upgrade head || echo "Migration warning (may already be applied)"
 
-# Start Celery worker in background
+# Start Celery worker in background with beat scheduler
 # High concurrency for maximum download throughput with multiple API keys
-echo "Starting Celery worker with concurrency=16..."
-celery -A app.tasks.celery_tasks worker --loglevel=info --concurrency=16 &
+# --beat enables scheduled tasks (hourly reconciliation)
+echo "Starting Celery worker with concurrency=16 and beat scheduler..."
+celery -A app.tasks.celery_tasks worker --beat --loglevel=info --concurrency=16 &
 CELERY_PID=$!
 echo "Celery worker started with PID: $CELERY_PID"
 
