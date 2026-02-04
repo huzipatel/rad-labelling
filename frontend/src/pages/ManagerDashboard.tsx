@@ -160,6 +160,11 @@ export default function ManagerDashboard() {
   const [loadingTasksWithImages, setLoadingTasksWithImages] = useState(false)
   const [creatingSample, setCreatingSample] = useState(false)
   
+  // Maintenance modal state
+  const [maintenanceModalOpen, setMaintenanceModalOpen] = useState(false)
+  const [maintenanceLoading, setMaintenanceLoading] = useState(false)
+  const [maintenanceResult, setMaintenanceResult] = useState<any>(null)
+  
   // Global image stats (accurate from database)
   const [globalImageStats, setGlobalImageStats] = useState<{
     total_locations: number
@@ -575,6 +580,80 @@ export default function ManagerDashboard() {
       alert(errorMsg)
     } finally {
       setCreatingSample(false)
+    }
+  }
+
+  // Maintenance handlers
+  const handleOpenMaintenance = () => {
+    setMaintenanceModalOpen(true)
+    setMaintenanceResult(null)
+  }
+
+  const handleSyncImageCounts = async () => {
+    setMaintenanceLoading(true)
+    setMaintenanceResult(null)
+    try {
+      const response = await tasksApi.syncImageCounts()
+      setMaintenanceResult({
+        type: 'sync',
+        success: true,
+        data: response.data
+      })
+      loadData() // Refresh the task list
+    } catch (error: any) {
+      setMaintenanceResult({
+        type: 'sync',
+        success: false,
+        error: error.response?.data?.detail || 'Failed to sync image counts'
+      })
+    } finally {
+      setMaintenanceLoading(false)
+    }
+  }
+
+  const handleDiagnoseMismatch = async () => {
+    setMaintenanceLoading(true)
+    setMaintenanceResult(null)
+    try {
+      const response = await tasksApi.diagnoseMismatch()
+      setMaintenanceResult({
+        type: 'diagnose',
+        success: true,
+        data: response.data
+      })
+    } catch (error: any) {
+      setMaintenanceResult({
+        type: 'diagnose',
+        success: false,
+        error: error.response?.data?.detail || 'Failed to diagnose mismatch'
+      })
+    } finally {
+      setMaintenanceLoading(false)
+    }
+  }
+
+  const handleReconcileImages = async (dryRun: boolean) => {
+    setMaintenanceLoading(true)
+    setMaintenanceResult(null)
+    try {
+      const response = await tasksApi.reconcileImages(dryRun)
+      setMaintenanceResult({
+        type: 'reconcile',
+        success: true,
+        dryRun,
+        data: response.data
+      })
+      if (!dryRun) {
+        loadData() // Refresh after actual reconciliation
+      }
+    } catch (error: any) {
+      setMaintenanceResult({
+        type: 'reconcile',
+        success: false,
+        error: error.response?.data?.detail || 'Failed to reconcile images'
+      })
+    } finally {
+      setMaintenanceLoading(false)
     }
   }
 
@@ -1022,9 +1101,16 @@ export default function ManagerDashboard() {
             <Link to="/performance" className="govuk-button govuk-button--secondary govuk-!-margin-right-2">
               Performance Report
             </Link>
-            <Link to="/exports" className="govuk-button govuk-button--secondary">
+            <Link to="/exports" className="govuk-button govuk-button--secondary govuk-!-margin-right-2">
               Export Data
             </Link>
+            <button 
+              className="govuk-button govuk-button--secondary"
+              onClick={handleOpenMaintenance}
+              title="Database maintenance tools"
+            >
+              🔧 Maintenance
+            </button>
           </div>
 
       {/* Filters */}
@@ -2202,6 +2288,123 @@ export default function ManagerDashboard() {
             </div>
           </>
         )}
+      </Modal>
+
+      {/* Maintenance Modal */}
+      <Modal
+        isOpen={maintenanceModalOpen}
+        onClose={() => setMaintenanceModalOpen(false)}
+        title="🔧 Database Maintenance"
+      >
+        <p className="govuk-body">
+          Tools to fix data inconsistencies between image storage and database records.
+        </p>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', marginBottom: '24px' }}>
+          {/* Diagnose */}
+          <div style={{ background: '#f3f4f6', padding: '16px', borderRadius: '8px' }}>
+            <h3 className="govuk-heading-s" style={{ marginBottom: '8px' }}>1. Diagnose Mismatch</h3>
+            <p className="govuk-body-s" style={{ color: '#6b7280', marginBottom: '12px' }}>
+              Check which tasks have different counts between the database and actual storage.
+            </p>
+            <button 
+              className="govuk-button govuk-button--secondary" 
+              onClick={handleDiagnoseMismatch}
+              disabled={maintenanceLoading}
+              style={{ marginBottom: 0 }}
+            >
+              {maintenanceLoading && maintenanceResult?.type !== 'diagnose' ? 'Loading...' : 'Run Diagnosis'}
+            </button>
+          </div>
+
+          {/* Reconcile - Dry Run */}
+          <div style={{ background: '#f3f4f6', padding: '16px', borderRadius: '8px' }}>
+            <h3 className="govuk-heading-s" style={{ marginBottom: '8px' }}>2. Reconcile Images (Preview)</h3>
+            <p className="govuk-body-s" style={{ color: '#6b7280', marginBottom: '12px' }}>
+              Scan storage and preview what database records would be created. Does not make changes.
+            </p>
+            <button 
+              className="govuk-button govuk-button--secondary" 
+              onClick={() => handleReconcileImages(true)}
+              disabled={maintenanceLoading}
+              style={{ marginBottom: 0 }}
+            >
+              Preview Reconciliation
+            </button>
+          </div>
+
+          {/* Reconcile - Actual */}
+          <div style={{ background: '#fef3c7', padding: '16px', borderRadius: '8px', border: '1px solid #f59e0b' }}>
+            <h3 className="govuk-heading-s" style={{ marginBottom: '8px' }}>3. Reconcile Images (Apply)</h3>
+            <p className="govuk-body-s" style={{ color: '#6b7280', marginBottom: '12px' }}>
+              Actually create missing database records for images found in storage.
+            </p>
+            <button 
+              className="govuk-button govuk-button--warning" 
+              onClick={() => handleReconcileImages(false)}
+              disabled={maintenanceLoading}
+              style={{ marginBottom: 0 }}
+            >
+              Apply Reconciliation
+            </button>
+          </div>
+
+          {/* Sync Counts */}
+          <div style={{ background: '#f3f4f6', padding: '16px', borderRadius: '8px' }}>
+            <h3 className="govuk-heading-s" style={{ marginBottom: '8px' }}>4. Sync Image Counts</h3>
+            <p className="govuk-body-s" style={{ color: '#6b7280', marginBottom: '12px' }}>
+              Update task counters to match actual database records.
+            </p>
+            <button 
+              className="govuk-button govuk-button--secondary" 
+              onClick={handleSyncImageCounts}
+              disabled={maintenanceLoading}
+              style={{ marginBottom: 0 }}
+            >
+              Sync Counts
+            </button>
+          </div>
+        </div>
+
+        {/* Results */}
+        {maintenanceResult && (
+          <div style={{ 
+            background: maintenanceResult.success ? '#d1fae5' : '#fee2e2', 
+            padding: '16px', 
+            borderRadius: '8px',
+            marginBottom: '16px'
+          }}>
+            <h4 className="govuk-heading-s" style={{ marginBottom: '8px' }}>
+              {maintenanceResult.success ? '✅ Result' : '❌ Error'}
+            </h4>
+            {maintenanceResult.success ? (
+              <pre style={{ 
+                fontSize: '12px', 
+                whiteSpace: 'pre-wrap', 
+                wordBreak: 'break-word',
+                maxHeight: '300px',
+                overflow: 'auto',
+                background: 'white',
+                padding: '12px',
+                borderRadius: '4px'
+              }}>
+                {JSON.stringify(maintenanceResult.data, null, 2)}
+              </pre>
+            ) : (
+              <p className="govuk-body-s" style={{ color: '#dc2626', margin: 0 }}>
+                {maintenanceResult.error}
+              </p>
+            )}
+          </div>
+        )}
+
+        <button
+          className="govuk-button govuk-button--secondary"
+          onClick={() => setMaintenanceModalOpen(false)}
+          style={{ marginTop: '8px' }}
+        >
+          Close
+        </button>
       </Modal>
 
       {/* Task Detail Modal */}

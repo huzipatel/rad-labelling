@@ -159,6 +159,16 @@ export const tasksApi = {
     sample_name?: string;
   }) =>
     api.post('/tasks/sample', data),
+  
+  // Maintenance / Database tools
+  syncImageCounts: () =>
+    api.post('/tasks/stats/sync-image-counts'),
+  diagnoseMismatch: () =>
+    api.post('/tasks/stats/diagnose-mismatch'),
+  reconcileImages: (dryRun: boolean = true) =>
+    api.post('/tasks/stats/reconcile-images', null, { params: { dry_run: dryRun } }),
+  getImageStats: () =>
+    api.get('/tasks/debug/image-stats'),
 }
 
 // Export API
