@@ -64,6 +64,33 @@ class User(Base):
     )
 
 
+class PasswordReset(Base):
+    """Password reset request tokens."""
+    
+    __tablename__ = "password_resets"
+    
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=False,
+        index=True
+    )
+    token: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now()
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    
+    def __repr__(self) -> str:
+        return f"<PasswordReset {self.user_id}>"
+
+
 class Invitation(Base):
     """Email invitation for new users."""
     

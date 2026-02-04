@@ -4,6 +4,8 @@ import Layout from './components/common/Layout'
 import LoginPage from './pages/LoginPage'
 import RegisterPage from './pages/RegisterPage'
 import AcceptInvitePage from './pages/AcceptInvitePage'
+import ForgotPasswordPage from './pages/ForgotPasswordPage'
+import ResetPasswordPage from './pages/ResetPasswordPage'
 import DashboardPage from './pages/DashboardPage'
 import TasksPage from './pages/TasksPage'
 import LabellingPage from './pages/LabellingPage'
@@ -36,6 +38,8 @@ function App() {
     <Routes>
       <Route path="/login" element={isAuthenticated ? <Navigate to="/dashboard" /> : <LoginPage />} />
       <Route path="/register" element={isAuthenticated ? <Navigate to="/dashboard" /> : <RegisterPage />} />
+      <Route path="/forgot-password" element={isAuthenticated ? <Navigate to="/dashboard" /> : <ForgotPasswordPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="/accept-invite" element={<AcceptInvitePage />} />
       
       <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>

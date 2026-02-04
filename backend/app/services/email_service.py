@@ -148,6 +148,93 @@ class EmailService:
         
         return self.send_email(to_email, subject, html_content, text_content)
     
+    def send_password_reset(
+        self,
+        to_email: str,
+        user_name: str,
+        reset_url: str
+    ) -> bool:
+        """Send password reset email."""
+        
+        subject = "Reset your AdVue UK password"
+        
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <style>
+                body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+                .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+                .header {{ background: #0b0c0c; color: white; padding: 20px; text-align: center; }}
+                .content {{ padding: 20px; background: #f8f8f8; }}
+                .button {{ 
+                    display: inline-block; 
+                    background: #00703c; 
+                    color: white; 
+                    padding: 12px 24px; 
+                    text-decoration: none; 
+                    border-radius: 4px;
+                    margin: 20px 0;
+                }}
+                .warning {{ 
+                    background: #fff3cd; 
+                    border: 1px solid #ffc107; 
+                    padding: 15px; 
+                    border-radius: 4px; 
+                    margin: 20px 0;
+                }}
+                .footer {{ padding: 20px; text-align: center; color: #666; font-size: 12px; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1 style="margin: 0;">AdVue UK</h1>
+                </div>
+                <div class="content">
+                    <h2>Reset Your Password</h2>
+                    <p>Hi {user_name},</p>
+                    <p>We received a request to reset your password. Click the button below to create a new password:</p>
+                    
+                    <a href="{reset_url}" class="button">Reset Password</a>
+                    
+                    <p>Or copy and paste this link into your browser:</p>
+                    <p style="word-break: break-all; font-size: 14px; color: #666;">{reset_url}</p>
+                    
+                    <div class="warning">
+                        <strong>⚠️ This link will expire in 1 hour.</strong>
+                    </div>
+                    
+                    <p style="color: #666; font-size: 14px;">If you didn't request a password reset, you can safely ignore this email. Your password will remain unchanged.</p>
+                </div>
+                <div class="footer">
+                    <p>AdVue UK - Advertising Location Intelligence</p>
+                    <p>For security, this link can only be used once.</p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        
+        text_content = f"""
+        Reset Your Password
+        
+        Hi {user_name},
+        
+        We received a request to reset your password.
+        
+        Click here to reset: {reset_url}
+        
+        This link will expire in 1 hour.
+        
+        If you didn't request this, you can safely ignore this email.
+        
+        ---
+        AdVue UK - Advertising Location Intelligence
+        """
+        
+        return self.send_email(to_email, subject, html_content, text_content)
+
     def send_task_assigned(
         self,
         to_email: str,

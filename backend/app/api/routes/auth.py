@@ -1,5 +1,7 @@
 """Authentication routes."""
 import uuid
+import secrets
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.responses import RedirectResponse
@@ -18,8 +20,14 @@ from app.core.security import (
     verify_password,
     Token
 )
-from app.models.user import User
+from app.models.user import User, PasswordReset
 from app.api.deps import get_current_user
+from app.services.email_service import email_service
+
+
+def utc_now() -> datetime:
+    """Return current UTC time as timezone-aware datetime."""
+    return datetime.now(timezone.utc)
 
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -41,6 +49,17 @@ class UserLogin(BaseModel):
 class GoogleAuthRequest(BaseModel):
     """Google OAuth token request."""
     token: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    """Forgot password request."""
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    """Reset password request."""
+    token: str
+    new_password: str
 
 
 class UserResponse(BaseModel):
@@ -318,4 +337,157 @@ async def get_me(current_user: User = Depends(get_current_user)):
         name=current_user.name,
         role=current_user.role
     )
+
+
+@router.post("/forgot-password")
+async def forgot_password(
+    request: ForgotPasswordRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Request a password reset email.
+    
+    Always returns success to prevent email enumeration attacks.
+    """
+    # Find user by email
+    result = await db.execute(
+        select(User).where(User.email == request.email)
+    )
+    user = result.scalar_one_or_none()
+    
+    if user and user.is_active:
+        # Generate reset token
+        token = secrets.token_urlsafe(32)
+        expires_at = utc_now() + timedelta(hours=1)
+        
+        # Invalidate any existing reset tokens for this user
+        existing_result = await db.execute(
+            select(PasswordReset).where(
+                PasswordReset.user_id == user.id,
+                PasswordReset.used_at.is_(None)
+            )
+        )
+        for old_reset in existing_result.scalars().all():
+            old_reset.used_at = utc_now()  # Mark as used/invalidated
+        
+        # Create new reset token
+        password_reset = PasswordReset(
+            user_id=user.id,
+            token=token,
+            expires_at=expires_at
+        )
+        db.add(password_reset)
+        await db.commit()
+        
+        # Build reset URL
+        frontend_url = settings.FRONTEND_URL if settings.FRONTEND_URL else (
+            settings.CORS_ORIGINS[0] if settings.CORS_ORIGINS else "http://localhost:5173"
+        )
+        reset_url = f"{frontend_url}/reset-password?token={token}"
+        
+        # Send email
+        email_service.send_password_reset(
+            to_email=user.email,
+            user_name=user.name,
+            reset_url=reset_url
+        )
+        
+        print(f"[Auth] Password reset requested for {user.email}")
+    else:
+        # Log but don't reveal whether user exists
+        print(f"[Auth] Password reset requested for unknown/inactive email: {request.email}")
+    
+    # Always return success to prevent email enumeration
+    return {
+        "message": "If an account with that email exists, we've sent a password reset link."
+    }
+
+
+@router.post("/reset-password")
+async def reset_password(
+    request: ResetPasswordRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Reset password using a valid reset token."""
+    # Find the reset token
+    result = await db.execute(
+        select(PasswordReset).where(PasswordReset.token == request.token)
+    )
+    password_reset = result.scalar_one_or_none()
+    
+    if not password_reset:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset link"
+        )
+    
+    # Check if already used
+    if password_reset.used_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This reset link has already been used"
+        )
+    
+    # Check if expired
+    if password_reset.expires_at < utc_now():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This reset link has expired. Please request a new one."
+        )
+    
+    # Get the user
+    user_result = await db.execute(
+        select(User).where(User.id == password_reset.user_id)
+    )
+    user = user_result.scalar_one_or_none()
+    
+    if not user or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unable to reset password for this account"
+        )
+    
+    # Validate new password
+    if len(request.new_password) < 8:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must be at least 8 characters long"
+        )
+    
+    # Update password
+    user.hashed_password = get_password_hash(request.new_password)
+    
+    # Mark token as used
+    password_reset.used_at = utc_now()
+    
+    await db.commit()
+    
+    print(f"[Auth] Password reset completed for {user.email}")
+    
+    return {
+        "message": "Password has been reset successfully. You can now log in with your new password."
+    }
+
+
+@router.get("/verify-reset-token")
+async def verify_reset_token(
+    token: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Verify if a reset token is valid (for frontend to check before showing form)."""
+    result = await db.execute(
+        select(PasswordReset).where(PasswordReset.token == token)
+    )
+    password_reset = result.scalar_one_or_none()
+    
+    if not password_reset:
+        return {"valid": False, "error": "Invalid reset link"}
+    
+    if password_reset.used_at is not None:
+        return {"valid": False, "error": "This reset link has already been used"}
+    
+    if password_reset.expires_at < utc_now():
+        return {"valid": False, "error": "This reset link has expired"}
+    
+    return {"valid": True}
 

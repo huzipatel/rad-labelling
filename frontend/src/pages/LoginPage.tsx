@@ -81,6 +81,12 @@ export default function LoginPage() {
                 />
               </div>
 
+              <p className="govuk-body govuk-!-margin-bottom-4">
+                <Link to="/forgot-password" className="govuk-link">
+                  Forgot your password?
+                </Link>
+              </p>
+
               <button
                 type="submit"
                 className="govuk-button"
