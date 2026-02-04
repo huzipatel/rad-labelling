@@ -2484,23 +2484,43 @@ async def create_sample_task(
                 )
             )
     
-    # Filter to only locations with images
-    location_query = (
-        location_query
-        .where(
-            Location.id.in_(
-                select(GSVImage.location_id).distinct()
-            )
-        )
-    )
+    # First, get the location IDs for this task WITHOUT the image filter
+    result_all = await db.execute(location_query)
+    all_location_ids = [row[0] for row in result_all.fetchall()]
     
-    result = await db.execute(location_query)
-    location_ids = [str(row[0]) for row in result.fetchall()]
+    print(f"[create_sample_task] Task {source_task.id} has {len(all_location_ids)} total locations")
+    print(f"[create_sample_task] Task has images_downloaded={source_task.images_downloaded}")
     
-    if len(location_ids) == 0:
+    if len(all_location_ids) == 0:
         raise HTTPException(
             status_code=400,
-            detail="No locations with images found in source task"
+            detail="No locations found for this task"
+        )
+    
+    # Try to find locations with images in the GSVImage table
+    img_locations_result = await db.execute(
+        select(GSVImage.location_id.distinct())
+        .where(GSVImage.location_id.in_(all_location_ids))
+    )
+    locations_with_images = [row[0] for row in img_locations_result.fetchall()]
+    
+    print(f"[create_sample_task] Found {len(locations_with_images)} locations with images in GSVImage table")
+    
+    # If we have locations with images, use those; otherwise fall back to all locations
+    # (images might be on GCS/local but not in database)
+    if len(locations_with_images) > 0:
+        location_ids = [str(loc_id) for loc_id in locations_with_images]
+        print(f"[create_sample_task] Using {len(location_ids)} locations WITH GSVImage records")
+    elif source_task.images_downloaded > 0:
+        # Task says images were downloaded but not in GSVImage table
+        # Allow creating sample from all locations - images likely exist on storage
+        location_ids = [str(loc_id) for loc_id in all_location_ids]
+        print(f"[create_sample_task] WARNING: No GSVImage records but images_downloaded={source_task.images_downloaded}")
+        print(f"[create_sample_task] Falling back to all {len(location_ids)} locations")
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No locations with images found. Task has {len(all_location_ids)} locations but no images in database."
         )
     
     # Validate sample size
