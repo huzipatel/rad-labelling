@@ -1383,6 +1383,96 @@ async def get_tasks_with_images_simple(
     ]
 
 
+@router.get("/debug/task/{task_id}")
+async def debug_task_info(
+    task_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_manager)
+):
+    """Debug endpoint to get full task details and location query info."""
+    from sqlalchemy import text
+    
+    # Get task
+    result = await db.execute(
+        select(Task).options(selectinload(Task.location_type)).where(Task.id == task_id)
+    )
+    task = result.scalar_one_or_none()
+    
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    # Build location query based on task's group field (same logic as create_sample_task)
+    base_query = select(func.count(Location.id)).where(Location.location_type_id == task.location_type_id)
+    
+    location_count_by_field = {}
+    
+    # Count by different methods
+    if task.group_field and task.group_value:
+        if task.group_field.startswith("original_"):
+            original_key = task.group_field.replace("original_", "")
+            query = base_query.where(text(f"original_data->>'{original_key}' = :gv")).params(gv=task.group_value)
+            result = await db.execute(query)
+            location_count_by_field['by_original_field'] = result.scalar() or 0
+        elif task.group_field == "council":
+            query = base_query.where(Location.council == task.group_value)
+            result = await db.execute(query)
+            location_count_by_field['by_council_group_value'] = result.scalar() or 0
+        elif task.group_field == "combined_authority":
+            query = base_query.where(Location.combined_authority == task.group_value)
+            result = await db.execute(query)
+            location_count_by_field['by_combined_authority'] = result.scalar() or 0
+        elif task.group_field == "road_classification":
+            query = base_query.where(Location.road_classification == task.group_value)
+            result = await db.execute(query)
+            location_count_by_field['by_road_classification'] = result.scalar() or 0
+    
+    # Also count by council field directly
+    if task.council:
+        query = base_query.where(Location.council == task.council)
+        result = await db.execute(query)
+        location_count_by_field['by_council_field'] = result.scalar() or 0
+    
+    # Count all locations for this location type
+    all_query = select(func.count(Location.id)).where(Location.location_type_id == task.location_type_id)
+    result = await db.execute(all_query)
+    total_for_location_type = result.scalar() or 0
+    
+    # Count GSVImages for this task's location type
+    from app.models.gsv_image import GSVImage
+    img_count_result = await db.execute(
+        select(func.count(GSVImage.id))
+        .join(Location, GSVImage.location_id == Location.id)
+        .where(Location.location_type_id == task.location_type_id)
+    )
+    gsv_images_for_type = img_count_result.scalar() or 0
+    
+    return {
+        "task_id": str(task.id),
+        "task_name": task.name,
+        "location_type_id": str(task.location_type_id),
+        "location_type_name": task.location_type.name if task.location_type else None,
+        "group_field": task.group_field,
+        "group_value": task.group_value,
+        "council": task.council,
+        "is_sample": task.is_sample,
+        "sample_location_ids": task.sample_location_ids,
+        "total_locations_counter": task.total_locations,
+        "images_downloaded_counter": task.images_downloaded,
+        "status": task.status,
+        "location_counts": {
+            "total_for_location_type": total_for_location_type,
+            **location_count_by_field
+        },
+        "gsv_images_for_location_type": gsv_images_for_type,
+        "diagnosis": (
+            "ISSUE: group_field is set but no matching query handler" 
+            if task.group_field and not any(location_count_by_field.values())
+            else "OK" if any(location_count_by_field.values()) or total_for_location_type > 0
+            else "ISSUE: No locations found for this location type"
+        )
+    }
+
+
 @router.get("/debug/image-stats")
 async def debug_image_stats(
     db: AsyncSession = Depends(get_db),
@@ -2697,52 +2787,69 @@ async def create_sample_task(
         )
     else:
         # Regular task - get locations by group field
+        # Must handle ALL the same group field types as the download task
+        from sqlalchemy import text
+        
+        base_query = select(Location.id).where(Location.location_type_id == source_task.location_type_id)
+        
         if source_task.group_field and source_task.group_value:
-            if source_task.group_field == "council":
-                location_query = (
-                    select(Location.id)
-                    .where(
-                        Location.location_type_id == source_task.location_type_id,
-                        Location.council == source_task.group_value
-                    )
-                )
+            if source_task.group_field.startswith("original_"):
+                # Group field is from original spreadsheet data (JSONB)
+                original_key = source_task.group_field.replace("original_", "")
+                location_query = base_query.where(
+                    text(f"original_data->>'{original_key}' = :group_value")
+                ).params(group_value=source_task.group_value)
+                print(f"[create_sample_task] Using original field '{original_key}' = '{source_task.group_value}'")
+            elif source_task.group_field == "council":
+                location_query = base_query.where(Location.council == source_task.group_value)
+                print(f"[create_sample_task] Using council = '{source_task.group_value}'")
             elif source_task.group_field == "combined_authority":
-                location_query = (
-                    select(Location.id)
-                    .where(
-                        Location.location_type_id == source_task.location_type_id,
-                        Location.combined_authority == source_task.group_value
-                    )
-                )
+                location_query = base_query.where(Location.combined_authority == source_task.group_value)
+                print(f"[create_sample_task] Using combined_authority = '{source_task.group_value}'")
+            elif source_task.group_field == "road_classification":
+                location_query = base_query.where(Location.road_classification == source_task.group_value)
+                print(f"[create_sample_task] Using road_classification = '{source_task.group_value}'")
             else:
-                # Fall back to council field
-                location_query = (
-                    select(Location.id)
-                    .where(
-                        Location.location_type_id == source_task.location_type_id,
-                        Location.council == source_task.council
-                    )
-                )
+                # Unknown group field - try council as fallback
+                print(f"[create_sample_task] WARNING: Unknown group_field '{source_task.group_field}', falling back to council")
+                location_query = base_query.where(Location.council == source_task.council)
+        elif source_task.council:
+            # No group_field but has council
+            location_query = base_query.where(Location.council == source_task.council)
+            print(f"[create_sample_task] Using council (no group_field) = '{source_task.council}'")
         else:
-            location_query = (
-                select(Location.id)
-                .where(
-                    Location.location_type_id == source_task.location_type_id,
-                    Location.council == source_task.council
-                )
-            )
+            # No grouping at all - get all locations for this location type
+            location_query = base_query
+            print(f"[create_sample_task] No group filter - getting all locations for location_type_id={source_task.location_type_id}")
     
     # First, get the location IDs for this task WITHOUT the image filter
     result_all = await db.execute(location_query)
     all_location_ids = [row[0] for row in result_all.fetchall()]
     
-    print(f"[create_sample_task] Task {source_task.id} has {len(all_location_ids)} total locations")
-    print(f"[create_sample_task] Task has images_downloaded={source_task.images_downloaded}")
+    print(f"[create_sample_task] Task {source_task.id} info:")
+    print(f"  - name: {source_task.name}")
+    print(f"  - group_field: {source_task.group_field}")
+    print(f"  - group_value: {source_task.group_value}")
+    print(f"  - council: {source_task.council}")
+    print(f"  - location_type_id: {source_task.location_type_id}")
+    print(f"  - total_locations (counter): {source_task.total_locations}")
+    print(f"  - images_downloaded (counter): {source_task.images_downloaded}")
+    print(f"  - locations found by query: {len(all_location_ids)}")
     
     if len(all_location_ids) == 0:
+        # Give a more helpful error message
+        error_detail = (
+            f"No locations found for this task. "
+            f"Task group_field='{source_task.group_field}', "
+            f"group_value='{source_task.group_value}', "
+            f"council='{source_task.council}', "
+            f"location_type_id='{source_task.location_type_id}'. "
+            f"Please check that locations exist matching these criteria."
+        )
+        print(f"[create_sample_task] ERROR: {error_detail}")
         raise HTTPException(
             status_code=400,
-            detail="No locations found for this task"
+            detail=error_detail
         )
     
     # Try to find locations with images in the GSVImage table
