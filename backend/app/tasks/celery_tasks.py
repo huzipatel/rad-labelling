@@ -25,6 +25,14 @@ celery_app.conf.update(
     task_soft_time_limit=42000,  # 11.5 hours soft limit (allows graceful shutdown)
     worker_prefetch_multiplier=1,  # Only fetch one task at a time per worker
     task_acks_late=True,  # Acknowledge tasks after completion (safer for long tasks)
+    # Periodic task schedule (Celery Beat)
+    beat_schedule={
+        'reconcile-images-hourly': {
+            'task': 'reconcile_images_background',
+            'schedule': 3600.0,  # Run every hour (3600 seconds)
+            'args': (None,),  # Reconcile all tasks
+        },
+    },
 )
 
 
@@ -284,6 +292,10 @@ def download_task_images_celery(self, task_id: str, download_log_id: str = None)
                 
                 print(f"[Celery GSV Download] Complete! Total: {images_downloaded} images ({new_downloads} new, {skipped_existing} previously existed), {failed_downloads} failed")
                 
+                # Trigger automatic reconciliation for this task
+                print(f"[Celery GSV Download] Triggering automatic reconciliation for task {task_id}")
+                reconcile_images_background.delay(task_id)
+                
                 return {
                     "task_id": task_id,
                     "images_downloaded": images_downloaded,
@@ -510,6 +522,11 @@ def download_all_tasks_sequential(self, task_ids: list):
                     results.append({"task_id": task_id, "error": str(e)})
         
         print(f"\n[Celery Sequential] === All {len(task_ids)} tasks completed ===")
+        
+        # Trigger automatic reconciliation for all completed tasks
+        print(f"[Celery Sequential] Triggering automatic reconciliation...")
+        reconcile_images_background.delay()  # Reconcile all
+        
         return {"completed": len(results), "results": results}
     
     return run_async(_download_all())
@@ -868,6 +885,186 @@ def process_spreadsheet_upload(self, job_id: str):
             raise self.retry(exc=e, countdown=30)  # Retry after 30 seconds
         
         raise
+
+
+@celery_app.task(bind=True, name="reconcile_images_background", max_retries=2)
+def reconcile_images_background(self, task_id: str = None):
+    """
+    Background task to reconcile GSVImage database with storage.
+    
+    Runs automatically after downloads complete to fix any mismatches between
+    images in storage and database records.
+    
+    Args:
+        task_id: Optional - reconcile only for a specific task, or all if None
+    """
+    from app.core.database import get_celery_session_maker
+    from app.models.task import Task
+    from app.models.location import Location
+    from app.models.gsv_image import GSVImage
+    from app.services.storage import get_storage_service
+    from sqlalchemy import select, func, and_
+    from sqlalchemy.orm import selectinload
+    from datetime import datetime
+    import re
+    import traceback
+    
+    async def _reconcile():
+        print(f"[Celery Reconcile] Starting automatic reconciliation" + 
+              (f" for task {task_id}" if task_id else " for all tasks"))
+        
+        session_maker = get_celery_session_maker()
+        storage = get_storage_service()
+        
+        async with session_maker() as db:
+            try:
+                # Get all files from storage
+                all_files = await storage.list_files(prefix="")
+                image_files = [f for f in all_files if f.endswith(('.jpg', '.jpeg', '.png'))]
+                print(f"[Celery Reconcile] Found {len(image_files)} image files in storage")
+                
+                if not image_files:
+                    return {"message": "No images in storage", "created": 0}
+                
+                # Parse filenames and extract location identifiers
+                # Expected format: {identifier}_{heading}_{date}.jpg
+                filename_pattern = re.compile(r'^(.+)_(\d+)_(\d{4}-\d{2}-\d{2})\.(?:jpg|jpeg|png)$', re.IGNORECASE)
+                
+                parsed_files = []
+                for filepath in image_files:
+                    filename = filepath.split('/')[-1]
+                    match = filename_pattern.match(filename)
+                    if match:
+                        parsed_files.append({
+                            'filepath': filepath,
+                            'filename': filename,
+                            'identifier': match.group(1),
+                            'heading': int(match.group(2)),
+                            'date_str': match.group(3)
+                        })
+                
+                print(f"[Celery Reconcile] Parsed {len(parsed_files)} valid image filenames")
+                
+                if not parsed_files:
+                    return {"message": "No valid image filenames found", "created": 0}
+                
+                # Get unique identifiers
+                unique_identifiers = list(set(p['identifier'] for p in parsed_files))
+                
+                # If task_id specified, filter to only that task's locations
+                if task_id:
+                    task_result = await db.execute(
+                        select(Task).options(selectinload(Task.location_type))
+                        .where(Task.id == UUID(task_id))
+                    )
+                    task = task_result.scalar_one_or_none()
+                    if task:
+                        # Get location identifiers for this task
+                        loc_result = await db.execute(
+                            select(Location.identifier)
+                            .where(Location.location_type_id == task.location_type_id)
+                        )
+                        task_identifiers = set(r[0] for r in loc_result.all())
+                        unique_identifiers = [i for i in unique_identifiers if i in task_identifiers]
+                
+                # Find locations by identifier (batch query)
+                locations_map = {}
+                batch_size = 500
+                for i in range(0, len(unique_identifiers), batch_size):
+                    batch_ids = unique_identifiers[i:i+batch_size]
+                    result = await db.execute(
+                        select(Location).where(Location.identifier.in_(batch_ids))
+                    )
+                    for loc in result.scalars().all():
+                        locations_map[loc.identifier] = loc
+                
+                print(f"[Celery Reconcile] Found {len(locations_map)} matching locations in database")
+                
+                # Get existing GSVImage records
+                location_ids = [loc.id for loc in locations_map.values()]
+                existing_images = set()
+                
+                for i in range(0, len(location_ids), batch_size):
+                    batch_loc_ids = location_ids[i:i+batch_size]
+                    result = await db.execute(
+                        select(GSVImage.location_id, GSVImage.heading)
+                        .where(GSVImage.location_id.in_(batch_loc_ids))
+                    )
+                    for row in result.all():
+                        existing_images.add((str(row[0]), row[1]))
+                
+                print(f"[Celery Reconcile] Found {len(existing_images)} existing GSVImage records")
+                
+                # Create missing records
+                created = 0
+                for parsed in parsed_files:
+                    loc = locations_map.get(parsed['identifier'])
+                    if not loc:
+                        continue
+                    
+                    key = (str(loc.id), parsed['heading'])
+                    if key in existing_images:
+                        continue
+                    
+                    # Create the missing GSVImage record
+                    gsv_image = GSVImage(
+                        location_id=loc.id,
+                        heading=parsed['heading'],
+                        gcs_path=parsed['filepath'],
+                        filename=parsed['filename'],
+                        downloaded_at=datetime.utcnow(),
+                        file_size=0  # Unknown from listing
+                    )
+                    db.add(gsv_image)
+                    existing_images.add(key)
+                    created += 1
+                    
+                    # Commit in batches
+                    if created % 100 == 0:
+                        await db.commit()
+                        print(f"[Celery Reconcile] Created {created} records...")
+                
+                await db.commit()
+                print(f"[Celery Reconcile] Complete! Created {created} new GSVImage records")
+                
+                # Now sync the task counters
+                if created > 0:
+                    print(f"[Celery Reconcile] Syncing task image counters...")
+                    
+                    # Get all tasks and update their image counts
+                    tasks_result = await db.execute(select(Task))
+                    tasks = tasks_result.scalars().all()
+                    
+                    synced = 0
+                    for task in tasks:
+                        # Count actual images for this task's locations
+                        count_result = await db.execute(
+                            select(func.count(GSVImage.id))
+                            .join(Location, GSVImage.location_id == Location.id)
+                            .where(Location.location_type_id == task.location_type_id)
+                        )
+                        actual_count = count_result.scalar() or 0
+                        
+                        if task.images_downloaded != actual_count:
+                            task.images_downloaded = actual_count
+                            synced += 1
+                    
+                    await db.commit()
+                    print(f"[Celery Reconcile] Synced {synced} task counters")
+                
+                return {
+                    "message": "Reconciliation complete",
+                    "files_scanned": len(image_files),
+                    "records_created": created,
+                    "task_id": task_id
+                }
+                
+            except Exception as e:
+                error_msg = f"Reconciliation error: {str(e)}\n{traceback.format_exc()}"
+                print(f"[Celery Reconcile] ERROR: {error_msg}")
+                return {"error": str(e)}
+    
+    return run_async(_reconcile())
 
 
 @celery_app.task(name="notify_task_completion", max_retries=3)
