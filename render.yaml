@@ -33,12 +33,13 @@ services:
     healthCheckPath: /health
 
   # Celery Worker for background tasks (spreadsheet processing, image downloads)
+  # Includes --beat for scheduled tasks (hourly reconciliation)
   - type: worker
     name: labelling-worker
     env: docker
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
-    dockerCommand: celery -A app.tasks.celery_tasks worker --loglevel=info --concurrency=2
+    dockerCommand: celery -A app.tasks.celery_tasks worker --beat --loglevel=info --concurrency=2
     envVars:
       - key: DATABASE_URL
         fromDatabase:

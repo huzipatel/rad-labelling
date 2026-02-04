@@ -1878,8 +1878,17 @@ async def pause_all_downloads(
     
     print(f"[Pause All] Paused {paused_count} downloading tasks")
     
+    # Trigger reconciliation to sync any images downloaded so far
+    if paused_count > 0:
+        try:
+            from app.tasks.celery_tasks import reconcile_images_background
+            reconcile_images_background.delay()  # Reconcile all tasks
+            print(f"[Pause All] Triggered reconciliation for all paused tasks")
+        except Exception as e:
+            print(f"[Pause All] Warning: Could not queue reconciliation: {e}")
+    
     return {
-        "message": f"Paused {paused_count} downloads",
+        "message": f"Paused {paused_count} downloads, reconciliation triggered",
         "tasks_paused": paused_count
     }
 
@@ -2107,7 +2116,15 @@ async def pause_download(
     
     await db.commit()
     
-    return {"message": "Download paused", "task_id": str(task_id)}
+    # Trigger reconciliation to sync any images downloaded so far
+    try:
+        from app.tasks.celery_tasks import reconcile_images_background
+        reconcile_images_background.delay(str(task_id))
+    except Exception as e:
+        # Don't fail the pause if reconciliation fails to queue
+        print(f"[Pause] Warning: Could not queue reconciliation: {e}")
+    
+    return {"message": "Download paused, reconciliation triggered", "task_id": str(task_id)}
 
 
 @router.post("/{task_id}/resume-download")
