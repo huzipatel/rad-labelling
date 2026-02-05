@@ -82,6 +82,39 @@ export default function LabellingPage() {
   const [showSnapshotsModal, setShowSnapshotsModal] = useState(false)
   const [sidebarHidden, setSidebarHidden] = useState(false)
   const [expandedImage, setExpandedImage] = useState<{ url: string; title: string; zoom: number } | null>(null)
+  const [magnifier, setMagnifier] = useState<{ 
+    visible: boolean; 
+    url: string; 
+    x: number; 
+    y: number; 
+    imgX: number; 
+    imgY: number;
+    imgWidth: number;
+    imgHeight: number;
+  } | null>(null)
+  
+  // Handle magnifier on image hover
+  const handleImageMouseMove = (e: React.MouseEvent<HTMLDivElement>, imageUrl: string) => {
+    const rect = e.currentTarget.getBoundingClientRect()
+    const x = e.clientX
+    const y = e.clientY
+    const imgX = ((e.clientX - rect.left) / rect.width) * 100
+    const imgY = ((e.clientY - rect.top) / rect.height) * 100
+    setMagnifier({ 
+      visible: true, 
+      url: imageUrl, 
+      x, 
+      y, 
+      imgX, 
+      imgY,
+      imgWidth: rect.width,
+      imgHeight: rect.height
+    })
+  }
+  
+  const handleImageMouseLeave = () => {
+    setMagnifier(null)
+  }
   
   // Handle sidebar visibility by adding/removing class on body
   useEffect(() => {
@@ -341,7 +374,7 @@ export default function LabellingPage() {
                        location.original_data?.['TimingStatus']
 
   return (
-    <div style={{ maxWidth: '1400px', margin: '0 auto' }}>
+    <div className="labelling-page-content" style={{ maxWidth: sidebarHidden ? '100%' : '1400px', margin: '0 auto', transition: 'max-width 0.3s ease' }}>
       {/* Header with Location Info */}
       <div style={{ 
         background: 'white', 
@@ -722,6 +755,8 @@ export default function LabellingPage() {
                   <div
                     key={heading}
                     onClick={() => setFormData({ ...formData, selected_image: isSelected ? 0 : idx + 1 })}
+                    onMouseMove={(e) => image && handleImageMouseMove(e, imageUrl)}
+                    onMouseLeave={handleImageMouseLeave}
                     style={{
                       position: 'relative',
                       aspectRatio: '4/3',
@@ -849,6 +884,8 @@ export default function LabellingPage() {
                         <div
                           key={image.id}
                           onClick={() => setFormData({ ...formData, selected_image: isSelected ? 0 : 5 + idx })}
+                          onMouseMove={(e) => handleImageMouseMove(e, snapshotUrl)}
+                          onMouseLeave={handleImageMouseLeave}
                           style={{
                             position: 'relative',
                             aspectRatio: '4/3',
@@ -1343,6 +1380,37 @@ export default function LabellingPage() {
               }}
             />
           </div>
+        </div>
+      )}
+
+      {/* Magnifying glass that follows cursor */}
+      {magnifier && magnifier.visible && (
+        <div
+          style={{
+            position: 'fixed',
+            left: magnifier.x + 20,
+            top: magnifier.y - 75,
+            width: '180px',
+            height: '180px',
+            borderRadius: '50%',
+            border: '3px solid #1d70b8',
+            boxShadow: '0 4px 20px rgba(0,0,0,0.4)',
+            overflow: 'hidden',
+            pointerEvents: 'none',
+            zIndex: 9999,
+            background: '#fff'
+          }}
+        >
+          <div
+            style={{
+              width: '100%',
+              height: '100%',
+              backgroundImage: `url(${magnifier.url})`,
+              backgroundRepeat: 'no-repeat',
+              backgroundSize: `${magnifier.imgWidth * 3}px ${magnifier.imgHeight * 3}px`,
+              backgroundPosition: `${-magnifier.imgX * magnifier.imgWidth * 3 / 100 + 90}px ${-magnifier.imgY * magnifier.imgHeight * 3 / 100 + 90}px`
+            }}
+          />
         </div>
       )}
     </div>
