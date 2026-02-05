@@ -80,8 +80,29 @@ export default function LabellingPage() {
   const [gsvError, setGsvError] = useState<string | null>(null)
   const [mapsLoaded, setMapsLoaded] = useState(false)
   const [showSnapshotsModal, setShowSnapshotsModal] = useState(false)
-  const [navBarHidden, setNavBarHidden] = useState(false)
-  const [zoomedImage, setZoomedImage] = useState<{ url: string; x: number; y: number } | null>(null)
+  const [sidebarHidden, setSidebarHidden] = useState(false)
+  const [imageZoomLevels, setImageZoomLevels] = useState<Record<string, number>>({})
+  
+  // Handle sidebar visibility by adding/removing class on body
+  useEffect(() => {
+    if (sidebarHidden) {
+      document.body.classList.add('sidebar-hidden')
+    } else {
+      document.body.classList.remove('sidebar-hidden')
+    }
+    return () => {
+      document.body.classList.remove('sidebar-hidden')
+    }
+  }, [sidebarHidden])
+  
+  // Handle scroll-to-zoom on images
+  const handleImageWheel = (e: React.WheelEvent, imageKey: string) => {
+    e.preventDefault()
+    const currentZoom = imageZoomLevels[imageKey] || 1
+    const delta = e.deltaY > 0 ? -0.1 : 0.1
+    const newZoom = Math.max(1, Math.min(3, currentZoom + delta))
+    setImageZoomLevels(prev => ({ ...prev, [imageKey]: newZoom }))
+  }
   
   const streetViewRef = useRef<HTMLDivElement>(null)
   const panoramaRef = useRef<google.maps.StreetViewPanorama | null>(null)
@@ -700,6 +721,8 @@ export default function LabellingPage() {
               {[0, 90, 180, 270].map((heading, idx) => {
                 const image = location.images.find((img) => img.heading === heading && !img.is_user_snapshot)
                 const isSelected = formData.selected_image === idx + 1
+                const imageKey = `main-${heading}`
+                const zoomLevel = imageZoomLevels[imageKey] || 1
                 const imageUrl = image ? (() => {
                   let url = image.gcs_url || ''
                   if (url.startsWith('http://localhost:8000')) url = url.replace('http://localhost:8000', '')
@@ -710,23 +733,17 @@ export default function LabellingPage() {
                   <div
                     key={heading}
                     onClick={() => setFormData({ ...formData, selected_image: isSelected ? 0 : idx + 1 })}
-                    onMouseMove={(e) => {
-                      if (!image) return
-                      const rect = e.currentTarget.getBoundingClientRect()
-                      const x = ((e.clientX - rect.left) / rect.width) * 100
-                      const y = ((e.clientY - rect.top) / rect.height) * 100
-                      setZoomedImage({ url: imageUrl, x, y })
-                    }}
-                    onMouseLeave={() => setZoomedImage(null)}
+                    onWheel={(e) => image && handleImageWheel(e, imageKey)}
+                    onMouseLeave={() => setImageZoomLevels(prev => ({ ...prev, [imageKey]: 1 }))}
                     style={{
                       position: 'relative',
                       aspectRatio: '4/3',
                       borderRadius: '12px',
                       overflow: 'hidden',
-                      cursor: 'pointer',
+                      cursor: zoomLevel > 1 ? 'zoom-out' : 'pointer',
                       border: isSelected ? '3px solid #10b981' : '2px solid #e5e7eb',
                       boxShadow: isSelected ? '0 0 0 4px rgba(16, 185, 129, 0.2)' : 'none',
-                      transition: 'all 0.2s ease',
+                      transition: 'border 0.2s ease, box-shadow 0.2s ease',
                       background: '#f3f4f6'
                     }}
                   >
@@ -735,12 +752,33 @@ export default function LabellingPage() {
                         <img 
                           src={imageUrl}
                           alt={`View ${heading}°`}
-                          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                          style={{ 
+                            width: '100%', 
+                            height: '100%', 
+                            objectFit: 'cover',
+                            transform: `scale(${zoomLevel})`,
+                            transition: 'transform 0.1s ease'
+                          }}
                           onError={(e) => {
                             const target = e.target as HTMLImageElement
                             target.style.opacity = '0.3'
                           }}
                         />
+                        {zoomLevel > 1 && (
+                          <div style={{
+                            position: 'absolute',
+                            top: '8px',
+                            left: '8px',
+                            background: 'rgba(0,0,0,0.7)',
+                            color: 'white',
+                            padding: '4px 8px',
+                            borderRadius: '4px',
+                            fontSize: '11px',
+                            zIndex: 10
+                          }}>
+                            {zoomLevel.toFixed(1)}x
+                          </div>
+                        )}
                         <div style={{
                           position: 'absolute',
                           bottom: 0,
@@ -806,6 +844,8 @@ export default function LabellingPage() {
                     .filter((img) => img.is_user_snapshot)
                     .map((image, idx) => {
                       const isSelected = formData.selected_image === 5 + idx
+                      const imageKey = `snapshot-${idx}`
+                      const zoomLevel = imageZoomLevels[imageKey] || 1
                       const snapshotUrl = (() => {
                         let url = image.gcs_url || ''
                         if (url.startsWith('http://localhost:8000')) url = url.replace('http://localhost:8000', '')
@@ -816,19 +856,14 @@ export default function LabellingPage() {
                         <div
                           key={image.id}
                           onClick={() => setFormData({ ...formData, selected_image: isSelected ? 0 : 5 + idx })}
-                          onMouseMove={(e) => {
-                            const rect = e.currentTarget.getBoundingClientRect()
-                            const x = ((e.clientX - rect.left) / rect.width) * 100
-                            const y = ((e.clientY - rect.top) / rect.height) * 100
-                            setZoomedImage({ url: snapshotUrl, x, y })
-                          }}
-                          onMouseLeave={() => setZoomedImage(null)}
+                          onWheel={(e) => handleImageWheel(e, imageKey)}
+                          onMouseLeave={() => setImageZoomLevels(prev => ({ ...prev, [imageKey]: 1 }))}
                           style={{
                             position: 'relative',
                             aspectRatio: '4/3',
                             borderRadius: '8px',
                             overflow: 'hidden',
-                            cursor: 'pointer',
+                            cursor: zoomLevel > 1 ? 'zoom-out' : 'pointer',
                             border: isSelected ? '3px solid #10b981' : '2px solid #e5e7eb',
                             boxShadow: isSelected ? '0 0 0 3px rgba(16, 185, 129, 0.2)' : 'none',
                           }}
@@ -836,12 +871,33 @@ export default function LabellingPage() {
                           <img 
                             src={snapshotUrl}
                             alt={`Snapshot ${idx + 1}`}
-                            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                            style={{ 
+                              width: '100%', 
+                              height: '100%', 
+                              objectFit: 'cover',
+                              transform: `scale(${zoomLevel})`,
+                              transition: 'transform 0.1s ease'
+                            }}
                             onError={(e) => {
                               const target = e.target as HTMLImageElement
                               target.style.opacity = '0.3'
                             }}
                           />
+                          {zoomLevel > 1 && (
+                            <div style={{
+                              position: 'absolute',
+                              top: '4px',
+                              left: '4px',
+                              background: 'rgba(0,0,0,0.7)',
+                              color: 'white',
+                              padding: '2px 6px',
+                              borderRadius: '4px',
+                              fontSize: '10px',
+                              zIndex: 10
+                            }}>
+                              {zoomLevel.toFixed(1)}x
+                            </div>
+                          )}
                           <div style={{
                             position: 'absolute',
                             bottom: 0,
@@ -962,76 +1018,36 @@ export default function LabellingPage() {
         </div>
       </div>
 
-      {/* Zoom Magnifier Overlay */}
-      {zoomedImage && (
-        <div style={{
-          position: 'fixed',
-          top: '50%',
-          right: '32px',
-          transform: 'translateY(-50%)',
-          width: '400px',
-          height: '300px',
-          borderRadius: '12px',
-          boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
-          border: '3px solid white',
-          overflow: 'hidden',
-          zIndex: 60,
-          pointerEvents: 'none',
-          background: '#f3f4f6'
-        }}>
-          <img 
-            src={zoomedImage.url}
-            alt="Zoomed view"
-            style={{
-              width: '200%',
-              height: '200%',
-              objectFit: 'cover',
-              transform: `translate(-${zoomedImage.x}%, -${zoomedImage.y}%)`,
-              transformOrigin: 'top left'
-            }}
-          />
-          <div style={{
-            position: 'absolute',
-            bottom: '8px',
-            left: '8px',
-            background: 'rgba(0,0,0,0.7)',
-            color: 'white',
-            padding: '4px 8px',
-            borderRadius: '4px',
-            fontSize: '11px'
-          }}>
-            2x Zoom
-          </div>
-        </div>
-      )}
-
-      {/* Navigation Bar Toggle Button (always visible) */}
+      {/* Sidebar Toggle Button */}
       <button
-        onClick={() => setNavBarHidden(!navBarHidden)}
+        onClick={() => setSidebarHidden(!sidebarHidden)}
         style={{
           position: 'fixed',
-          bottom: navBarHidden ? '16px' : '90px',
-          right: '32px',
-          background: '#6b7280',
+          top: '16px',
+          left: sidebarHidden ? '16px' : '276px',
+          background: '#2563eb',
           color: 'white',
           border: 'none',
           borderRadius: '8px',
           padding: '8px 12px',
           cursor: 'pointer',
-          zIndex: 51,
+          zIndex: 100,
           fontSize: '12px',
           boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
-          transition: 'bottom 0.3s ease'
+          transition: 'left 0.3s ease',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '6px'
         }}
       >
-        {navBarHidden ? '⬆️ Show Nav' : '⬇️ Hide Nav'}
+        {sidebarHidden ? '→' : '←'} {sidebarHidden ? 'Show Menu' : 'Hide Menu'}
       </button>
 
       {/* Navigation Bar */}
       <div style={{ 
         position: 'fixed',
-        bottom: navBarHidden ? '-100px' : '0',
-        left: '260px',
+        bottom: 0,
+        left: sidebarHidden ? '0' : '260px',
         right: 0,
         background: 'white',
         borderTop: '1px solid #e5e7eb',
@@ -1041,7 +1057,7 @@ export default function LabellingPage() {
         alignItems: 'center',
         boxShadow: '0 -4px 6px -1px rgba(0,0,0,0.1)',
         zIndex: 50,
-        transition: 'bottom 0.3s ease'
+        transition: 'left 0.3s ease'
       }}>
         <span style={{ fontWeight: 500, color: '#6b7280' }}>
           📍 {location.index + 1} of {location.total} locations
@@ -1067,7 +1083,7 @@ export default function LabellingPage() {
       </div>
       
       {/* Spacer for fixed nav */}
-      <div style={{ height: navBarHidden ? '20px' : '80px', transition: 'height 0.3s ease' }} />
+      <div style={{ height: '80px' }} />
 
       {/* Snapshots Modal */}
       {showSnapshotsModal && (
