@@ -5,7 +5,7 @@ import { useAuthStore } from '../store/authStore'
 export default function LoginPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const { login, isLoading, error, clearError } = useAuthStore()
+  const { login, isLoading, error } = useAuthStore()
   const navigate = useNavigate()
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -14,7 +14,7 @@ export default function LoginPage() {
       await login(email, password)
       navigate('/dashboard')
     } catch {
-      // Error handled by store
+      // Error handled by store - error remains visible until next submit
     }
   }
 
@@ -54,10 +54,7 @@ export default function LoginPage() {
                   autoComplete="email"
                   spellCheck="false"
                   value={email}
-                  onChange={(e) => {
-                    setEmail(e.target.value)
-                    clearError()
-                  }}
+                  onChange={(e) => setEmail(e.target.value)}
                   required
                 />
               </div>
@@ -73,10 +70,7 @@ export default function LoginPage() {
                   type="password"
                   autoComplete="current-password"
                   value={password}
-                  onChange={(e) => {
-                    setPassword(e.target.value)
-                    clearError()
-                  }}
+                  onChange={(e) => setPassword(e.target.value)}
                   required
                 />
               </div>

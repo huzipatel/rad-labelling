@@ -8,7 +8,7 @@ export default function RegisterPage() {
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [validationError, setValidationError] = useState('')
-  const { register, isLoading, error, clearError } = useAuthStore()
+  const { register, isLoading, error } = useAuthStore()
   const navigate = useNavigate()
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -78,11 +78,7 @@ export default function RegisterPage() {
                   autoComplete="name"
                   spellCheck="false"
                   value={name}
-                  onChange={(e) => {
-                    setName(e.target.value)
-                    clearError()
-                    setValidationError('')
-                  }}
+                  onChange={(e) => setName(e.target.value)}
                   required
                 />
               </div>
@@ -102,11 +98,7 @@ export default function RegisterPage() {
                   autoComplete="email"
                   spellCheck="false"
                   value={email}
-                  onChange={(e) => {
-                    setEmail(e.target.value)
-                    clearError()
-                    setValidationError('')
-                  }}
+                  onChange={(e) => setEmail(e.target.value)}
                   required
                 />
               </div>
@@ -125,11 +117,7 @@ export default function RegisterPage() {
                   type="password"
                   autoComplete="new-password"
                   value={password}
-                  onChange={(e) => {
-                    setPassword(e.target.value)
-                    clearError()
-                    setValidationError('')
-                  }}
+                  onChange={(e) => setPassword(e.target.value)}
                   required
                 />
               </div>
@@ -145,11 +133,7 @@ export default function RegisterPage() {
                   type="password"
                   autoComplete="new-password"
                   value={confirmPassword}
-                  onChange={(e) => {
-                    setConfirmPassword(e.target.value)
-                    clearError()
-                    setValidationError('')
-                  }}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
                   required
                 />
               </div>
