@@ -898,22 +898,6 @@ export default function ManagerDashboard() {
   const totalImagesAcrossTasks = globalImageStats?.total_images_expected || 0
   const downloadedImagesAcrossTasks = globalImageStats?.total_images_downloaded || 0
   const overallDownloadProgress = globalImageStats?.download_percentage || 0
-  
-  // Handler to sync image counts
-  const handleSyncImageCounts = async () => {
-    if (!confirm('This will recalculate all task image counts from the database. Continue?')) return
-    setSyncingCounts(true)
-    try {
-      const response = await tasksApi.syncImageCounts()
-      alert(`Synced: ${response.data.tasks_updated} tasks updated`)
-      loadData() // Reload to show updated counts
-    } catch (error) {
-      console.error('Failed to sync image counts:', error)
-      alert('Failed to sync image counts')
-    } finally {
-      setSyncingCounts(false)
-    }
-  }
 
   if (loading) return <Loading />
 
