@@ -1383,18 +1383,18 @@ export default function LabellingPage() {
         </div>
       )}
 
-      {/* Magnifying glass that follows cursor */}
+      {/* Zoom preview box centered on cursor */}
       {magnifier && magnifier.visible && (
         <div
           style={{
             position: 'fixed',
-            left: magnifier.x + 20,
-            top: magnifier.y - 75,
-            width: '180px',
-            height: '180px',
-            borderRadius: '50%',
+            left: magnifier.x - 150,
+            top: magnifier.y - 150,
+            width: '300px',
+            height: '300px',
+            borderRadius: '8px',
             border: '3px solid #1d70b8',
-            boxShadow: '0 4px 20px rgba(0,0,0,0.4)',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
             overflow: 'hidden',
             pointerEvents: 'none',
             zIndex: 9999,
@@ -1407,8 +1407,8 @@ export default function LabellingPage() {
               height: '100%',
               backgroundImage: `url(${magnifier.url})`,
               backgroundRepeat: 'no-repeat',
-              backgroundSize: `${magnifier.imgWidth * 3}px ${magnifier.imgHeight * 3}px`,
-              backgroundPosition: `${-magnifier.imgX * magnifier.imgWidth * 3 / 100 + 90}px ${-magnifier.imgY * magnifier.imgHeight * 3 / 100 + 90}px`
+              backgroundSize: `${magnifier.imgWidth * 4}px ${magnifier.imgHeight * 4}px`,
+              backgroundPosition: `${-magnifier.imgX * magnifier.imgWidth * 4 / 100 + 150}px ${-magnifier.imgY * magnifier.imgHeight * 4 / 100 + 150}px`
             }}
           />
         </div>
