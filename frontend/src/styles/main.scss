@@ -388,6 +388,11 @@ body {
   // Full width when sidebar is hidden
   body.sidebar-hidden & {
     margin-left: 0;
+    
+    .app-main {
+      max-width: 100%;
+      padding: 24px 48px;
+    }
   }
 }
 

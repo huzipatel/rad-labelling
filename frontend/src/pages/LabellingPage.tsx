@@ -81,7 +81,7 @@ export default function LabellingPage() {
   const [mapsLoaded, setMapsLoaded] = useState(false)
   const [showSnapshotsModal, setShowSnapshotsModal] = useState(false)
   const [sidebarHidden, setSidebarHidden] = useState(false)
-  const [imageZoomLevels, setImageZoomLevels] = useState<Record<string, number>>({})
+  const [expandedImage, setExpandedImage] = useState<{ url: string; title: string; zoom: number } | null>(null)
   
   // Handle sidebar visibility by adding/removing class on body
   useEffect(() => {
@@ -94,15 +94,6 @@ export default function LabellingPage() {
       document.body.classList.remove('sidebar-hidden')
     }
   }, [sidebarHidden])
-  
-  // Handle scroll-to-zoom on images
-  const handleImageWheel = (e: React.WheelEvent, imageKey: string) => {
-    e.preventDefault()
-    const currentZoom = imageZoomLevels[imageKey] || 1
-    const delta = e.deltaY > 0 ? -0.1 : 0.1
-    const newZoom = Math.max(1, Math.min(3, currentZoom + delta))
-    setImageZoomLevels(prev => ({ ...prev, [imageKey]: newZoom }))
-  }
   
   const streetViewRef = useRef<HTMLDivElement>(null)
   const panoramaRef = useRef<google.maps.StreetViewPanorama | null>(null)
@@ -721,8 +712,6 @@ export default function LabellingPage() {
               {[0, 90, 180, 270].map((heading, idx) => {
                 const image = location.images.find((img) => img.heading === heading && !img.is_user_snapshot)
                 const isSelected = formData.selected_image === idx + 1
-                const imageKey = `main-${heading}`
-                const zoomLevel = imageZoomLevels[imageKey] || 1
                 const imageUrl = image ? (() => {
                   let url = image.gcs_url || ''
                   if (url.startsWith('http://localhost:8000')) url = url.replace('http://localhost:8000', '')
@@ -733,14 +722,12 @@ export default function LabellingPage() {
                   <div
                     key={heading}
                     onClick={() => setFormData({ ...formData, selected_image: isSelected ? 0 : idx + 1 })}
-                    onWheel={(e) => image && handleImageWheel(e, imageKey)}
-                    onMouseLeave={() => setImageZoomLevels(prev => ({ ...prev, [imageKey]: 1 }))}
                     style={{
                       position: 'relative',
                       aspectRatio: '4/3',
                       borderRadius: '12px',
                       overflow: 'hidden',
-                      cursor: zoomLevel > 1 ? 'zoom-out' : 'pointer',
+                      cursor: 'pointer',
                       border: isSelected ? '3px solid #10b981' : '2px solid #e5e7eb',
                       boxShadow: isSelected ? '0 0 0 4px rgba(16, 185, 129, 0.2)' : 'none',
                       transition: 'border 0.2s ease, box-shadow 0.2s ease',
@@ -755,30 +742,38 @@ export default function LabellingPage() {
                           style={{ 
                             width: '100%', 
                             height: '100%', 
-                            objectFit: 'cover',
-                            transform: `scale(${zoomLevel})`,
-                            transition: 'transform 0.1s ease'
+                            objectFit: 'cover'
                           }}
                           onError={(e) => {
                             const target = e.target as HTMLImageElement
                             target.style.opacity = '0.3'
                           }}
                         />
-                        {zoomLevel > 1 && (
-                          <div style={{
+                        {/* Zoom button */}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setExpandedImage({ url: imageUrl, title: `${heading}° View`, zoom: 1 })
+                          }}
+                          style={{
                             position: 'absolute',
                             top: '8px',
                             left: '8px',
-                            background: 'rgba(0,0,0,0.7)',
+                            background: 'rgba(0,0,0,0.6)',
                             color: 'white',
-                            padding: '4px 8px',
-                            borderRadius: '4px',
-                            fontSize: '11px',
-                            zIndex: 10
-                          }}>
-                            {zoomLevel.toFixed(1)}x
-                          </div>
-                        )}
+                            border: 'none',
+                            borderRadius: '6px',
+                            padding: '6px 10px',
+                            fontSize: '12px',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            zIndex: 5
+                          }}
+                        >
+                          🔍 Zoom
+                        </button>
                         <div style={{
                           position: 'absolute',
                           bottom: 0,
@@ -844,8 +839,6 @@ export default function LabellingPage() {
                     .filter((img) => img.is_user_snapshot)
                     .map((image, idx) => {
                       const isSelected = formData.selected_image === 5 + idx
-                      const imageKey = `snapshot-${idx}`
-                      const zoomLevel = imageZoomLevels[imageKey] || 1
                       const snapshotUrl = (() => {
                         let url = image.gcs_url || ''
                         if (url.startsWith('http://localhost:8000')) url = url.replace('http://localhost:8000', '')
@@ -856,14 +849,12 @@ export default function LabellingPage() {
                         <div
                           key={image.id}
                           onClick={() => setFormData({ ...formData, selected_image: isSelected ? 0 : 5 + idx })}
-                          onWheel={(e) => handleImageWheel(e, imageKey)}
-                          onMouseLeave={() => setImageZoomLevels(prev => ({ ...prev, [imageKey]: 1 }))}
                           style={{
                             position: 'relative',
                             aspectRatio: '4/3',
                             borderRadius: '8px',
                             overflow: 'hidden',
-                            cursor: zoomLevel > 1 ? 'zoom-out' : 'pointer',
+                            cursor: 'pointer',
                             border: isSelected ? '3px solid #10b981' : '2px solid #e5e7eb',
                             boxShadow: isSelected ? '0 0 0 3px rgba(16, 185, 129, 0.2)' : 'none',
                           }}
@@ -874,30 +865,35 @@ export default function LabellingPage() {
                             style={{ 
                               width: '100%', 
                               height: '100%', 
-                              objectFit: 'cover',
-                              transform: `scale(${zoomLevel})`,
-                              transition: 'transform 0.1s ease'
+                              objectFit: 'cover'
                             }}
                             onError={(e) => {
                               const target = e.target as HTMLImageElement
                               target.style.opacity = '0.3'
                             }}
                           />
-                          {zoomLevel > 1 && (
-                            <div style={{
+                          {/* Zoom button */}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setExpandedImage({ url: snapshotUrl, title: `Snapshot #${idx + 1}`, zoom: 1 })
+                            }}
+                            style={{
                               position: 'absolute',
                               top: '4px',
                               left: '4px',
-                              background: 'rgba(0,0,0,0.7)',
+                              background: 'rgba(0,0,0,0.6)',
                               color: 'white',
-                              padding: '2px 6px',
+                              border: 'none',
                               borderRadius: '4px',
-                              fontSize: '10px',
-                              zIndex: 10
-                            }}>
-                              {zoomLevel.toFixed(1)}x
-                            </div>
-                          )}
+                              padding: '4px 8px',
+                              fontSize: '11px',
+                              cursor: 'pointer',
+                              zIndex: 5
+                            }}
+                          >
+                            🔍
+                          </button>
                           <div style={{
                             position: 'absolute',
                             bottom: 0,
@@ -1209,6 +1205,143 @@ export default function LabellingPage() {
             <p className="govuk-body-s" style={{ marginTop: '16px', color: '#6b7280', textAlign: 'center' }}>
               Click a snapshot to select it as the representative image
             </p>
+          </div>
+        </div>
+      )}
+
+      {/* Expanded Image Modal */}
+      {expandedImage && (
+        <div 
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0,0,0,0.9)',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 200
+          }}
+          onClick={() => setExpandedImage(null)}
+        >
+          {/* Header */}
+          <div style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            padding: '16px 24px',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            background: 'linear-gradient(rgba(0,0,0,0.8), transparent)'
+          }}>
+            <span style={{ color: 'white', fontSize: '16px', fontWeight: 500 }}>{expandedImage.title}</span>
+            <button
+              onClick={() => setExpandedImage(null)}
+              style={{
+                background: 'rgba(255,255,255,0.2)',
+                border: 'none',
+                color: 'white',
+                fontSize: '20px',
+                width: '40px',
+                height: '40px',
+                borderRadius: '50%',
+                cursor: 'pointer'
+              }}
+            >
+              ✕
+            </button>
+          </div>
+
+          {/* Zoom controls */}
+          <div style={{
+            position: 'absolute',
+            bottom: '24px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            display: 'flex',
+            gap: '12px',
+            alignItems: 'center',
+            background: 'rgba(0,0,0,0.7)',
+            padding: '12px 20px',
+            borderRadius: '24px'
+          }} onClick={(e) => e.stopPropagation()}>
+            <button
+              onClick={() => setExpandedImage(prev => prev ? { ...prev, zoom: Math.max(0.5, prev.zoom - 0.25) } : null)}
+              style={{
+                background: 'rgba(255,255,255,0.2)',
+                border: 'none',
+                color: 'white',
+                fontSize: '20px',
+                width: '36px',
+                height: '36px',
+                borderRadius: '50%',
+                cursor: 'pointer'
+              }}
+            >
+              −
+            </button>
+            <span style={{ color: 'white', minWidth: '60px', textAlign: 'center', fontSize: '14px' }}>
+              {Math.round(expandedImage.zoom * 100)}%
+            </span>
+            <button
+              onClick={() => setExpandedImage(prev => prev ? { ...prev, zoom: Math.min(3, prev.zoom + 0.25) } : null)}
+              style={{
+                background: 'rgba(255,255,255,0.2)',
+                border: 'none',
+                color: 'white',
+                fontSize: '20px',
+                width: '36px',
+                height: '36px',
+                borderRadius: '50%',
+                cursor: 'pointer'
+              }}
+            >
+              +
+            </button>
+            <button
+              onClick={() => setExpandedImage(prev => prev ? { ...prev, zoom: 1 } : null)}
+              style={{
+                background: 'rgba(255,255,255,0.2)',
+                border: 'none',
+                color: 'white',
+                fontSize: '12px',
+                padding: '8px 12px',
+                borderRadius: '16px',
+                cursor: 'pointer',
+                marginLeft: '8px'
+              }}
+            >
+              Reset
+            </button>
+          </div>
+
+          {/* Image container */}
+          <div 
+            style={{
+              maxWidth: '90vw',
+              maxHeight: '80vh',
+              overflow: 'auto',
+              borderRadius: '8px'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <img
+              src={expandedImage.url}
+              alt={expandedImage.title}
+              style={{
+                display: 'block',
+                transform: `scale(${expandedImage.zoom})`,
+                transformOrigin: 'center center',
+                transition: 'transform 0.2s ease',
+                maxWidth: expandedImage.zoom === 1 ? '90vw' : 'none',
+                maxHeight: expandedImage.zoom === 1 ? '80vh' : 'none'
+              }}
+            />
           </div>
         </div>
       )}
