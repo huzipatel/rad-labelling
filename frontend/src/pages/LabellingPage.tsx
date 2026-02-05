@@ -80,6 +80,8 @@ export default function LabellingPage() {
   const [gsvError, setGsvError] = useState<string | null>(null)
   const [mapsLoaded, setMapsLoaded] = useState(false)
   const [showSnapshotsModal, setShowSnapshotsModal] = useState(false)
+  const [navBarHidden, setNavBarHidden] = useState(false)
+  const [zoomedImage, setZoomedImage] = useState<{ url: string; x: number; y: number } | null>(null)
   
   const streetViewRef = useRef<HTMLDivElement>(null)
   const panoramaRef = useRef<google.maps.StreetViewPanorama | null>(null)
@@ -309,11 +311,22 @@ export default function LabellingPage() {
   if (loading) return <Loading />
   if (!location) return <p className="govuk-body">Location not found</p>
 
-  // Extract road function from original_data
-  const roadFunction = location.original_data?.['function'] || 
+  // Extract road function from original_data - check many possible field names
+  const roadFunction = location.road_classification ||
+                       location.original_data?.['RoadClassification'] ||
+                       location.original_data?.['road_classification'] ||
+                       location.original_data?.['RoadType'] ||
+                       location.original_data?.['road_type'] ||
+                       location.original_data?.['BusStopType'] ||
+                       location.original_data?.['StopType'] ||
+                       location.original_data?.['stop_type'] ||
+                       location.original_data?.['Type'] ||
+                       location.original_data?.['type'] ||
+                       location.original_data?.['function'] || 
                        location.original_data?.['Function'] || 
                        location.original_data?.['roadFunction'] ||
-                       location.road_classification
+                       location.original_data?.['Bearing'] ||
+                       location.original_data?.['TimingStatus']
 
   return (
     <div style={{ maxWidth: '1400px', margin: '0 auto' }}>
@@ -687,10 +700,24 @@ export default function LabellingPage() {
               {[0, 90, 180, 270].map((heading, idx) => {
                 const image = location.images.find((img) => img.heading === heading && !img.is_user_snapshot)
                 const isSelected = formData.selected_image === idx + 1
+                const imageUrl = image ? (() => {
+                  let url = image.gcs_url || ''
+                  if (url.startsWith('http://localhost:8000')) url = url.replace('http://localhost:8000', '')
+                  if (!url.startsWith('/') && !url.startsWith('http')) url = `/api/v1/images/${url}`
+                  return url
+                })() : ''
                 return (
                   <div
                     key={heading}
-                    onClick={() => setFormData({ ...formData, selected_image: idx + 1 })}
+                    onClick={() => setFormData({ ...formData, selected_image: isSelected ? 0 : idx + 1 })}
+                    onMouseMove={(e) => {
+                      if (!image) return
+                      const rect = e.currentTarget.getBoundingClientRect()
+                      const x = ((e.clientX - rect.left) / rect.width) * 100
+                      const y = ((e.clientY - rect.top) / rect.height) * 100
+                      setZoomedImage({ url: imageUrl, x, y })
+                    }}
+                    onMouseLeave={() => setZoomedImage(null)}
                     style={{
                       position: 'relative',
                       aspectRatio: '4/3',
@@ -706,12 +733,7 @@ export default function LabellingPage() {
                     {image ? (
                       <>
                         <img 
-                          src={(() => {
-                            let url = image.gcs_url || ''
-                            if (url.startsWith('http://localhost:8000')) url = url.replace('http://localhost:8000', '')
-                            if (!url.startsWith('/') && !url.startsWith('http')) url = `/api/v1/images/${url}`
-                            return url
-                          })()}
+                          src={imageUrl}
                           alt={`View ${heading}°`}
                           style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                           onError={(e) => {
@@ -784,10 +806,23 @@ export default function LabellingPage() {
                     .filter((img) => img.is_user_snapshot)
                     .map((image, idx) => {
                       const isSelected = formData.selected_image === 5 + idx
+                      const snapshotUrl = (() => {
+                        let url = image.gcs_url || ''
+                        if (url.startsWith('http://localhost:8000')) url = url.replace('http://localhost:8000', '')
+                        if (!url.startsWith('/') && !url.startsWith('http')) url = `/api/v1/images/${url}`
+                        return url
+                      })()
                       return (
                         <div
                           key={image.id}
-                          onClick={() => setFormData({ ...formData, selected_image: 5 + idx })}
+                          onClick={() => setFormData({ ...formData, selected_image: isSelected ? 0 : 5 + idx })}
+                          onMouseMove={(e) => {
+                            const rect = e.currentTarget.getBoundingClientRect()
+                            const x = ((e.clientX - rect.left) / rect.width) * 100
+                            const y = ((e.clientY - rect.top) / rect.height) * 100
+                            setZoomedImage({ url: snapshotUrl, x, y })
+                          }}
+                          onMouseLeave={() => setZoomedImage(null)}
                           style={{
                             position: 'relative',
                             aspectRatio: '4/3',
@@ -799,12 +834,7 @@ export default function LabellingPage() {
                           }}
                         >
                           <img 
-                            src={(() => {
-                              let url = image.gcs_url || ''
-                              if (url.startsWith('http://localhost:8000')) url = url.replace('http://localhost:8000', '')
-                              if (!url.startsWith('/') && !url.startsWith('http')) url = `/api/v1/images/${url}`
-                              return url
-                            })()}
+                            src={snapshotUrl}
                             alt={`Snapshot ${idx + 1}`}
                             style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                             onError={(e) => {
@@ -932,10 +962,75 @@ export default function LabellingPage() {
         </div>
       </div>
 
+      {/* Zoom Magnifier Overlay */}
+      {zoomedImage && (
+        <div style={{
+          position: 'fixed',
+          top: '50%',
+          right: '32px',
+          transform: 'translateY(-50%)',
+          width: '400px',
+          height: '300px',
+          borderRadius: '12px',
+          boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
+          border: '3px solid white',
+          overflow: 'hidden',
+          zIndex: 60,
+          pointerEvents: 'none',
+          background: '#f3f4f6'
+        }}>
+          <img 
+            src={zoomedImage.url}
+            alt="Zoomed view"
+            style={{
+              width: '200%',
+              height: '200%',
+              objectFit: 'cover',
+              transform: `translate(-${zoomedImage.x}%, -${zoomedImage.y}%)`,
+              transformOrigin: 'top left'
+            }}
+          />
+          <div style={{
+            position: 'absolute',
+            bottom: '8px',
+            left: '8px',
+            background: 'rgba(0,0,0,0.7)',
+            color: 'white',
+            padding: '4px 8px',
+            borderRadius: '4px',
+            fontSize: '11px'
+          }}>
+            2x Zoom
+          </div>
+        </div>
+      )}
+
+      {/* Navigation Bar Toggle Button (always visible) */}
+      <button
+        onClick={() => setNavBarHidden(!navBarHidden)}
+        style={{
+          position: 'fixed',
+          bottom: navBarHidden ? '16px' : '90px',
+          right: '32px',
+          background: '#6b7280',
+          color: 'white',
+          border: 'none',
+          borderRadius: '8px',
+          padding: '8px 12px',
+          cursor: 'pointer',
+          zIndex: 51,
+          fontSize: '12px',
+          boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+          transition: 'bottom 0.3s ease'
+        }}
+      >
+        {navBarHidden ? '⬆️ Show Nav' : '⬇️ Hide Nav'}
+      </button>
+
       {/* Navigation Bar */}
       <div style={{ 
         position: 'fixed',
-        bottom: 0,
+        bottom: navBarHidden ? '-100px' : '0',
         left: '260px',
         right: 0,
         background: 'white',
@@ -945,7 +1040,8 @@ export default function LabellingPage() {
         justifyContent: 'space-between',
         alignItems: 'center',
         boxShadow: '0 -4px 6px -1px rgba(0,0,0,0.1)',
-        zIndex: 50
+        zIndex: 50,
+        transition: 'bottom 0.3s ease'
       }}>
         <span style={{ fontWeight: 500, color: '#6b7280' }}>
           📍 {location.index + 1} of {location.total} locations
@@ -971,7 +1067,7 @@ export default function LabellingPage() {
       </div>
       
       {/* Spacer for fixed nav */}
-      <div style={{ height: '80px' }} />
+      <div style={{ height: navBarHidden ? '20px' : '80px', transition: 'height 0.3s ease' }} />
 
       {/* Snapshots Modal */}
       {showSnapshotsModal && (

@@ -247,13 +247,20 @@ async def get_location_for_labelling(
         original_data.get('local_authority')
     )
     
-    # Road classification: prefer Location field, then original_data
+    # Road classification: prefer Location field, then original_data with many possible field names
     road_classification = (
         location.road_classification or
         original_data.get('RoadClassification') or
         original_data.get('road_classification') or
         original_data.get('RoadType') or
-        original_data.get('road_type')
+        original_data.get('road_type') or
+        original_data.get('BusStopType') or
+        original_data.get('StopType') or
+        original_data.get('stop_type') or
+        original_data.get('Type') or
+        original_data.get('type') or
+        original_data.get('Bearing') or  # Sometimes used to indicate direction/type
+        original_data.get('TimingStatus')  # NaPTAN timing point status
     )
     
     # Road name: check multiple possible field names
