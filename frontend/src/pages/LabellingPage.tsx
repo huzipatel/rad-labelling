@@ -82,38 +82,62 @@ export default function LabellingPage() {
   const [showSnapshotsModal, setShowSnapshotsModal] = useState(false)
   const [sidebarHidden, setSidebarHidden] = useState(false)
   const [expandedImage, setExpandedImage] = useState<{ url: string; title: string; zoom: number } | null>(null)
-  const [magnifier, setMagnifier] = useState<{ 
-    visible: boolean; 
-    url: string; 
-    x: number; 
-    y: number; 
-    imgX: number; 
-    imgY: number;
-    imgWidth: number;
-    imgHeight: number;
+  
+  // Drag-to-zoom state
+  const [zoomBoxes, setZoomBoxes] = useState<{ [key: string]: { x: number; y: number; width: number; height: number } }>({})
+  const [dragState, setDragState] = useState<{
+    imageKey: string;
+    startX: number;
+    startY: number;
+    currentX: number;
+    currentY: number;
+    isDragging: boolean;
   } | null>(null)
   
-  // Handle magnifier on image hover
-  const handleImageMouseMove = (e: React.MouseEvent<HTMLDivElement>, imageUrl: string) => {
+  // Handle drag-to-zoom
+  const handleZoomDragStart = (e: React.MouseEvent<HTMLDivElement>, imageKey: string) => {
+    e.preventDefault()
     const rect = e.currentTarget.getBoundingClientRect()
-    const x = e.clientX
-    const y = e.clientY
-    const imgX = ((e.clientX - rect.left) / rect.width) * 100
-    const imgY = ((e.clientY - rect.top) / rect.height) * 100
-    setMagnifier({ 
-      visible: true, 
-      url: imageUrl, 
-      x, 
-      y, 
-      imgX, 
-      imgY,
-      imgWidth: rect.width,
-      imgHeight: rect.height
+    const x = ((e.clientX - rect.left) / rect.width) * 100
+    const y = ((e.clientY - rect.top) / rect.height) * 100
+    setDragState({
+      imageKey,
+      startX: x,
+      startY: y,
+      currentX: x,
+      currentY: y,
+      isDragging: true
     })
   }
   
-  const handleImageMouseLeave = () => {
-    setMagnifier(null)
+  const handleZoomDragMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!dragState || !dragState.isDragging) return
+    const rect = e.currentTarget.getBoundingClientRect()
+    const x = Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100))
+    const y = Math.max(0, Math.min(100, ((e.clientY - rect.top) / rect.height) * 100))
+    setDragState({ ...dragState, currentX: x, currentY: y })
+  }
+  
+  const handleZoomDragEnd = () => {
+    if (!dragState || !dragState.isDragging) return
+    const { imageKey, startX, startY, currentX, currentY } = dragState
+    const minX = Math.min(startX, currentX)
+    const minY = Math.min(startY, currentY)
+    const width = Math.abs(currentX - startX)
+    const height = Math.abs(currentY - startY)
+    
+    // Only apply zoom if the box is large enough (at least 10% in both dimensions)
+    if (width > 10 && height > 10) {
+      setZoomBoxes({ ...zoomBoxes, [imageKey]: { x: minX, y: minY, width, height } })
+    }
+    setDragState(null)
+  }
+  
+  const resetZoom = (imageKey: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    const newZoomBoxes = { ...zoomBoxes }
+    delete newZoomBoxes[imageKey]
+    setZoomBoxes(newZoomBoxes)
   }
   
   // Handle sidebar visibility by adding/removing class on body
@@ -745,6 +769,9 @@ export default function LabellingPage() {
               {[0, 90, 180, 270].map((heading, idx) => {
                 const image = location.images.find((img) => img.heading === heading && !img.is_user_snapshot)
                 const isSelected = formData.selected_image === idx + 1
+                const imageKey = `main-${heading}`
+                const zoomBox = zoomBoxes[imageKey]
+                const isCurrentlyDragging = dragState?.imageKey === imageKey && dragState.isDragging
                 const imageUrl = image ? (() => {
                   let url = image.gcs_url || ''
                   if (url.startsWith('http://localhost:8000')) url = url.replace('http://localhost:8000', '')
@@ -754,19 +781,22 @@ export default function LabellingPage() {
                 return (
                   <div
                     key={heading}
-                    onClick={() => setFormData({ ...formData, selected_image: isSelected ? 0 : idx + 1 })}
-                    onMouseMove={(e) => image && handleImageMouseMove(e, imageUrl)}
-                    onMouseLeave={handleImageMouseLeave}
+                    onClick={() => !dragState && setFormData({ ...formData, selected_image: isSelected ? 0 : idx + 1 })}
+                    onMouseDown={(e) => image && !zoomBox && handleZoomDragStart(e, imageKey)}
+                    onMouseMove={(e) => image && handleZoomDragMove(e)}
+                    onMouseUp={handleZoomDragEnd}
+                    onMouseLeave={handleZoomDragEnd}
                     style={{
                       position: 'relative',
                       aspectRatio: '4/3',
                       borderRadius: '12px',
                       overflow: 'hidden',
-                      cursor: 'pointer',
+                      cursor: zoomBox ? 'default' : 'crosshair',
                       border: isSelected ? '3px solid #10b981' : '2px solid #e5e7eb',
                       boxShadow: isSelected ? '0 0 0 4px rgba(16, 185, 129, 0.2)' : 'none',
                       transition: 'border 0.2s ease, box-shadow 0.2s ease',
-                      background: '#f3f4f6'
+                      background: '#f3f4f6',
+                      userSelect: 'none'
                     }}
                   >
                     {image ? (
@@ -774,17 +804,66 @@ export default function LabellingPage() {
                         <img 
                           src={imageUrl}
                           alt={`View ${heading}°`}
+                          draggable={false}
                           style={{ 
                             width: '100%', 
                             height: '100%', 
-                            objectFit: 'cover'
+                            objectFit: 'cover',
+                            objectPosition: zoomBox 
+                              ? `${zoomBox.x + zoomBox.width / 2}% ${zoomBox.y + zoomBox.height / 2}%` 
+                              : 'center',
+                            transform: zoomBox 
+                              ? `scale(${100 / Math.max(zoomBox.width, zoomBox.height)})` 
+                              : 'none',
+                            transformOrigin: zoomBox 
+                              ? `${zoomBox.x + zoomBox.width / 2}% ${zoomBox.y + zoomBox.height / 2}%` 
+                              : 'center',
+                            transition: 'transform 0.3s ease, object-position 0.3s ease'
                           }}
                           onError={(e) => {
                             const target = e.target as HTMLImageElement
                             target.style.opacity = '0.3'
                           }}
                         />
-                        {/* Zoom button */}
+                        {/* Selection box while dragging */}
+                        {isCurrentlyDragging && dragState && (
+                          <div style={{
+                            position: 'absolute',
+                            left: `${Math.min(dragState.startX, dragState.currentX)}%`,
+                            top: `${Math.min(dragState.startY, dragState.currentY)}%`,
+                            width: `${Math.abs(dragState.currentX - dragState.startX)}%`,
+                            height: `${Math.abs(dragState.currentY - dragState.startY)}%`,
+                            border: '2px dashed #1d70b8',
+                            background: 'rgba(29, 112, 184, 0.2)',
+                            pointerEvents: 'none',
+                            zIndex: 10
+                          }} />
+                        )}
+                        {/* Reset zoom button */}
+                        {zoomBox && (
+                          <button
+                            onClick={(e) => resetZoom(imageKey, e)}
+                            style={{
+                              position: 'absolute',
+                              top: '8px',
+                              left: '8px',
+                              background: 'rgba(0,0,0,0.7)',
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: '6px',
+                              padding: '6px 12px',
+                              fontSize: '12px',
+                              cursor: 'pointer',
+                              zIndex: 15,
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '4px'
+                            }}
+                          >
+                            ↩ Reset
+                          </button>
+                        )}
+                        {/* Expand button */}
                         <button
                           onClick={(e) => {
                             e.stopPropagation()
@@ -793,7 +872,7 @@ export default function LabellingPage() {
                           style={{
                             position: 'absolute',
                             top: '8px',
-                            left: '8px',
+                            left: zoomBox ? '80px' : '8px',
                             background: 'rgba(0,0,0,0.6)',
                             color: 'white',
                             border: 'none',
@@ -807,7 +886,7 @@ export default function LabellingPage() {
                             zIndex: 5
                           }}
                         >
-                          🔍 Zoom
+                          ⛶ Expand
                         </button>
                         <div style={{
                           position: 'absolute',
@@ -820,7 +899,7 @@ export default function LabellingPage() {
                           fontSize: '13px',
                           fontWeight: 500
                         }}>
-                          {heading}° | {image.capture_date || 'Unknown date'}
+                          {heading}° | {image.capture_date || 'Unknown date'} {!zoomBox && <span style={{ opacity: 0.7, fontSize: '11px' }}>• Drag to zoom</span>}
                         </div>
                         {isSelected && (
                           <div style={{
@@ -874,6 +953,9 @@ export default function LabellingPage() {
                     .filter((img) => img.is_user_snapshot)
                     .map((image, idx) => {
                       const isSelected = formData.selected_image === 5 + idx
+                      const imageKey = `snapshot-${image.id}`
+                      const zoomBox = zoomBoxes[imageKey]
+                      const isCurrentlyDragging = dragState?.imageKey === imageKey && dragState.isDragging
                       const snapshotUrl = (() => {
                         let url = image.gcs_url || ''
                         if (url.startsWith('http://localhost:8000')) url = url.replace('http://localhost:8000', '')
@@ -883,33 +965,82 @@ export default function LabellingPage() {
                       return (
                         <div
                           key={image.id}
-                          onClick={() => setFormData({ ...formData, selected_image: isSelected ? 0 : 5 + idx })}
-                          onMouseMove={(e) => handleImageMouseMove(e, snapshotUrl)}
-                          onMouseLeave={handleImageMouseLeave}
+                          onClick={() => !dragState && setFormData({ ...formData, selected_image: isSelected ? 0 : 5 + idx })}
+                          onMouseDown={(e) => !zoomBox && handleZoomDragStart(e, imageKey)}
+                          onMouseMove={handleZoomDragMove}
+                          onMouseUp={handleZoomDragEnd}
+                          onMouseLeave={handleZoomDragEnd}
                           style={{
                             position: 'relative',
                             aspectRatio: '4/3',
                             borderRadius: '8px',
                             overflow: 'hidden',
-                            cursor: 'pointer',
+                            cursor: zoomBox ? 'default' : 'crosshair',
                             border: isSelected ? '3px solid #10b981' : '2px solid #e5e7eb',
                             boxShadow: isSelected ? '0 0 0 3px rgba(16, 185, 129, 0.2)' : 'none',
+                            userSelect: 'none'
                           }}
                         >
                           <img 
                             src={snapshotUrl}
                             alt={`Snapshot ${idx + 1}`}
+                            draggable={false}
                             style={{ 
                               width: '100%', 
                               height: '100%', 
-                              objectFit: 'cover'
+                              objectFit: 'cover',
+                              objectPosition: zoomBox 
+                                ? `${zoomBox.x + zoomBox.width / 2}% ${zoomBox.y + zoomBox.height / 2}%` 
+                                : 'center',
+                              transform: zoomBox 
+                                ? `scale(${100 / Math.max(zoomBox.width, zoomBox.height)})` 
+                                : 'none',
+                              transformOrigin: zoomBox 
+                                ? `${zoomBox.x + zoomBox.width / 2}% ${zoomBox.y + zoomBox.height / 2}%` 
+                                : 'center',
+                              transition: 'transform 0.3s ease, object-position 0.3s ease'
                             }}
                             onError={(e) => {
                               const target = e.target as HTMLImageElement
                               target.style.opacity = '0.3'
                             }}
                           />
-                          {/* Zoom button */}
+                          {/* Selection box while dragging */}
+                          {isCurrentlyDragging && dragState && (
+                            <div style={{
+                              position: 'absolute',
+                              left: `${Math.min(dragState.startX, dragState.currentX)}%`,
+                              top: `${Math.min(dragState.startY, dragState.currentY)}%`,
+                              width: `${Math.abs(dragState.currentX - dragState.startX)}%`,
+                              height: `${Math.abs(dragState.currentY - dragState.startY)}%`,
+                              border: '2px dashed #1d70b8',
+                              background: 'rgba(29, 112, 184, 0.2)',
+                              pointerEvents: 'none',
+                              zIndex: 10
+                            }} />
+                          )}
+                          {/* Reset zoom button */}
+                          {zoomBox && (
+                            <button
+                              onClick={(e) => resetZoom(imageKey, e)}
+                              style={{
+                                position: 'absolute',
+                                top: '4px',
+                                left: '4px',
+                                background: 'rgba(0,0,0,0.7)',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '4px',
+                                padding: '4px 8px',
+                                fontSize: '11px',
+                                cursor: 'pointer',
+                                zIndex: 15
+                              }}
+                            >
+                              ↩ Reset
+                            </button>
+                          )}
+                          {/* Expand button */}
                           <button
                             onClick={(e) => {
                               e.stopPropagation()
@@ -918,7 +1049,7 @@ export default function LabellingPage() {
                             style={{
                               position: 'absolute',
                               top: '4px',
-                              left: '4px',
+                              left: zoomBox ? '60px' : '4px',
                               background: 'rgba(0,0,0,0.6)',
                               color: 'white',
                               border: 'none',
@@ -929,7 +1060,7 @@ export default function LabellingPage() {
                               zIndex: 5
                             }}
                           >
-                            🔍
+                            ⛶
                           </button>
                           <div style={{
                             position: 'absolute',
@@ -941,7 +1072,7 @@ export default function LabellingPage() {
                             padding: '6px 8px',
                             fontSize: '11px'
                           }}>
-                            Snapshot #{idx + 1}
+                            Snapshot #{idx + 1} {!zoomBox && <span style={{ opacity: 0.7 }}>• Drag to zoom</span>}
                           </div>
                           {isSelected && (
                             <div style={{
@@ -1383,36 +1514,6 @@ export default function LabellingPage() {
         </div>
       )}
 
-      {/* Zoom preview box centered on cursor */}
-      {magnifier && magnifier.visible && (
-        <div
-          style={{
-            position: 'fixed',
-            left: magnifier.x - 150,
-            top: magnifier.y - 150,
-            width: '300px',
-            height: '300px',
-            borderRadius: '8px',
-            border: '3px solid #1d70b8',
-            boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
-            overflow: 'hidden',
-            pointerEvents: 'none',
-            zIndex: 9999,
-            background: '#fff'
-          }}
-        >
-          <div
-            style={{
-              width: '100%',
-              height: '100%',
-              backgroundImage: `url(${magnifier.url})`,
-              backgroundRepeat: 'no-repeat',
-              backgroundSize: `${magnifier.imgWidth * 4}px ${magnifier.imgHeight * 4}px`,
-              backgroundPosition: `${-magnifier.imgX * magnifier.imgWidth * 4 / 100 + 150}px ${-magnifier.imgY * magnifier.imgHeight * 4 / 100 + 150}px`
-            }}
-          />
-        </div>
-      )}
     </div>
   )
 }
