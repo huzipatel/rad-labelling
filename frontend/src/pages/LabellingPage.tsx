@@ -88,10 +88,10 @@ export default function LabellingPage() {
   useEffect(() => {
     const apiKey = import.meta.env.VITE_GSV_API_KEY as string | undefined
     
-    // If no API key, don't try to load
+    // If no API key, show a message to the user
     if (!apiKey) {
       console.warn('Google Maps API key not configured (VITE_GSV_API_KEY)')
-      // Don't set error, just don't load the embed
+      setGsvError('Google Maps API key not configured. Please contact your administrator to enable interactive Street View.')
       return
     }
     
@@ -110,6 +110,7 @@ export default function LabellingPage() {
       })
     } catch (err) {
       console.error('Error initializing Google Maps loader:', err)
+      setGsvError('Failed to initialize Google Maps. Please try refreshing the page.')
     }
   }, [])
 
@@ -356,7 +357,7 @@ export default function LabellingPage() {
         }}>
           <div>
             <span style={{ fontSize: '12px', color: '#6b7280', textTransform: 'uppercase', fontWeight: 600 }}>Council</span>
-            <p style={{ margin: '4px 0 0', fontWeight: 500 }}>{location.council || 'N/A'}</p>
+            <p style={{ margin: '4px 0 0', fontWeight: 500 }}>{location.council || location.original_data?.['LocalAuthority'] || location.original_data?.['Council'] || 'N/A'}</p>
           </div>
           <div>
             <span style={{ fontSize: '12px', color: '#6b7280', textTransform: 'uppercase', fontWeight: 600 }}>Locality</span>
@@ -910,6 +911,19 @@ export default function LabellingPage() {
                   >
                     Open in Google Maps
                   </a>
+                </div>
+            ) : !mapsLoaded ? (
+                <div style={{ 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  justifyContent: 'center', 
+                  height: '100%',
+                  flexDirection: 'column',
+                  gap: '16px',
+                  padding: '40px'
+                }}>
+                  <span style={{ fontSize: '32px' }}>⏳</span>
+                  <p style={{ color: '#6b7280', textAlign: 'center' }}>Loading Street View...</p>
                 </div>
             ) : (
               <div ref={streetViewRef} className="street-view-container__embed" />

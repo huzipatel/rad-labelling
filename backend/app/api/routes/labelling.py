@@ -159,6 +159,7 @@ async def get_location_for_labelling(
 ):
     """Get a specific location for labelling by index."""
     from sqlalchemy.orm import selectinload
+    from sqlalchemy import text
     
     # Get task with location_type eagerly loaded
     result = await db.execute(
@@ -175,28 +176,39 @@ async def get_location_for_labelling(
     if current_user.role == "labeller" and task.assigned_to != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
     
-    # Build query based on task's group_field
-    base_query = select(Location).where(Location.location_type_id == task.location_type_id)
-    
-    # Filter by the task's grouping
-    if task.group_field and task.group_field.startswith("original_"):
-        original_key = task.group_field.replace("original_", "")
-        from sqlalchemy import text
-        base_query = base_query.where(
-            text(f"original_data->>'{original_key}' = :group_value")
-        ).params(group_value=task.group_value)
-    elif task.group_field == "council" or not task.group_field:
-        base_query = base_query.where(Location.council == (task.group_value or task.council))
-    elif task.group_field == "combined_authority":
-        base_query = base_query.where(Location.combined_authority == task.group_value)
-    elif task.group_field == "road_classification":
-        base_query = base_query.where(Location.road_classification == task.group_value)
-    
-    # Get location by index
-    location_result = await db.execute(
-        base_query.order_by(Location.identifier).offset(location_index).limit(1)
-    )
-    location = location_result.scalar_one_or_none()
+    # Handle sample tasks differently - they have specific location IDs
+    if task.is_sample and task.sample_location_ids:
+        # Sample task - get location from the sample_location_ids list
+        if location_index >= len(task.sample_location_ids):
+            raise HTTPException(status_code=404, detail="Location index out of range")
+        
+        location_id = uuid.UUID(task.sample_location_ids[location_index])
+        location_result = await db.execute(
+            select(Location).where(Location.id == location_id)
+        )
+        location = location_result.scalar_one_or_none()
+    else:
+        # Regular task - build query based on task's group_field
+        base_query = select(Location).where(Location.location_type_id == task.location_type_id)
+        
+        # Filter by the task's grouping
+        if task.group_field and task.group_field.startswith("original_"):
+            original_key = task.group_field.replace("original_", "")
+            base_query = base_query.where(
+                text(f"original_data->>'{original_key}' = :group_value")
+            ).params(group_value=task.group_value)
+        elif task.group_field == "council" or not task.group_field:
+            base_query = base_query.where(Location.council == (task.group_value or task.council))
+        elif task.group_field == "combined_authority":
+            base_query = base_query.where(Location.combined_authority == task.group_value)
+        elif task.group_field == "road_classification":
+            base_query = base_query.where(Location.road_classification == task.group_value)
+        
+        # Get location by index
+        location_result = await db.execute(
+            base_query.order_by(Location.identifier).offset(location_index).limit(1)
+        )
+        location = location_result.scalar_one_or_none()
     
     if not location:
         raise HTTPException(status_code=404, detail="Location not found")
@@ -221,20 +233,56 @@ async def get_location_for_labelling(
     # Get label fields from location type
     label_fields = task.location_type.label_fields
     
-    # Extract additional fields from original_data
+    # Extract additional fields from original_data with fallbacks
     original_data = location.original_data or {}
-    road_name = original_data.get('LocalityName') or original_data.get('RoadName') or original_data.get('road_name')
-    locality = original_data.get('LocalityName') or original_data.get('Locality') or original_data.get('locality')
+    
+    # Council: prefer Location.council, then task.council/group_value, then original_data
+    council = (
+        location.council or 
+        task.council or 
+        (task.group_value if task.group_field in ("council", "original_LocalAuthority", "original_Council") else None) or
+        original_data.get('LocalAuthority') or 
+        original_data.get('Council') or 
+        original_data.get('council') or
+        original_data.get('local_authority')
+    )
+    
+    # Road classification: prefer Location field, then original_data
+    road_classification = (
+        location.road_classification or
+        original_data.get('RoadClassification') or
+        original_data.get('road_classification') or
+        original_data.get('RoadType') or
+        original_data.get('road_type')
+    )
+    
+    # Road name: check multiple possible field names
+    road_name = (
+        original_data.get('CommonName') or
+        original_data.get('RoadName') or
+        original_data.get('road_name') or
+        original_data.get('Street') or
+        original_data.get('street')
+    )
+    
+    # Locality: check multiple possible field names
+    locality = (
+        original_data.get('LocalityName') or
+        original_data.get('Locality') or
+        original_data.get('locality') or
+        original_data.get('Town') or
+        original_data.get('town')
+    )
     
     return LocationLabelResponse(
         id=str(location.id),
         identifier=location.identifier,
         latitude=location.latitude,
         longitude=location.longitude,
-        council=location.council,
+        council=council,
         road_name=road_name,
         locality=locality,
-        road_classification=location.road_classification,
+        road_classification=road_classification,
         combined_authority=location.combined_authority,
         original_data=original_data,
         index=location_index,
