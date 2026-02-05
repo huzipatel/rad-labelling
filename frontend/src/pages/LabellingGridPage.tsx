@@ -10,6 +10,10 @@ interface LocationItem {
   longitude: number
   has_label: boolean
   label_status: string | null
+  road_name: string | null
+  locality: string | null
+  town: string | null
+  nptg_locality_name: string | null
 }
 
 interface TaskInfo {
@@ -41,15 +45,14 @@ export default function LabellingGridPage() {
 
   const loadTask = async () => {
     try {
-      const response = await tasksApi.getTasks()
-      const taskData = response.data.tasks?.find((t: any) => t.id === taskId)
-      if (taskData) {
+      const response = await tasksApi.getTask(taskId!)
+      if (response.data) {
         setTask({
-          id: taskData.id,
-          name: taskData.name,
-          council: taskData.council,
-          total_locations: taskData.total_locations,
-          completed_locations: taskData.completed_locations
+          id: response.data.id,
+          name: response.data.name,
+          council: response.data.council,
+          total_locations: response.data.total_locations,
+          completed_locations: response.data.completed_locations
         })
       }
     } catch (error) {
@@ -252,9 +255,19 @@ export default function LabellingGridPage() {
                       </span>
                     )}
                   </div>
-                  <div style={{ fontSize: '11px', color: '#6b7280' }}>
-                    {loc.latitude.toFixed(4)}, {loc.longitude.toFixed(4)}
-                  </div>
+                  {/* Show road name and locality if available */}
+                  {(loc.road_name || loc.locality || loc.nptg_locality_name || loc.town) ? (
+                    <div style={{ fontSize: '12px', color: '#374151', marginBottom: '4px' }}>
+                      {loc.road_name && <div style={{ fontWeight: 500 }}>{loc.road_name}</div>}
+                      <div style={{ color: '#6b7280', fontSize: '11px' }}>
+                        {loc.locality || loc.nptg_locality_name || loc.town || ''}
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: '11px', color: '#6b7280' }}>
+                      {loc.latitude.toFixed(4)}, {loc.longitude.toFixed(4)}
+                    </div>
+                  )}
                   {loc.has_label && (
                     <div style={{ 
                       fontSize: '11px', 

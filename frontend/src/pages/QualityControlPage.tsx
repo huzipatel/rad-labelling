@@ -11,7 +11,7 @@ interface Task {
   completed_locations: number
   failed_locations: number
   status: string
-  assigned_to_name?: string
+  assignee_name?: string
 }
 
 interface LocationItem {
@@ -21,6 +21,10 @@ interface LocationItem {
   longitude: number
   has_label: boolean
   label_status: string | null
+  road_name: string | null
+  locality: string | null
+  town: string | null
+  nptg_locality_name: string | null
 }
 
 interface CommentSummary {
@@ -57,10 +61,11 @@ export default function QualityControlPage() {
 
   const loadTasks = async () => {
     try {
-      const response = await tasksApi.getTasks()
-      // Filter to show only assigned/in-progress/completed tasks
+      // Use getAllTasks for managers to see all assigned tasks
+      const response = await tasksApi.getAllTasks({ page: 1, page_size: 500 })
       const allTasks = response.data.tasks || []
-      setTasks(allTasks.filter((t: Task) => ['assigned', 'in_progress', 'completed'].includes(t.status)))
+      // Filter to show only tasks that have been assigned (not pending/unassigned)
+      setTasks(allTasks.filter((t: Task) => t.assignee_name && ['assigned', 'in_progress', 'completed'].includes(t.status)))
     } catch (error) {
       console.error('Failed to load tasks:', error)
     } finally {
@@ -156,7 +161,7 @@ export default function QualityControlPage() {
                     {task.name}
                   </div>
                   <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '8px' }}>
-                    {task.council} • {task.assigned_to_name || 'Unassigned'}
+                    {task.council} • {task.assignee_name || 'Unassigned'}
                   </div>
                   <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                     <div style={{ 
@@ -213,7 +218,7 @@ export default function QualityControlPage() {
                   <div>
                     <h2 className="govuk-heading-l" style={{ marginBottom: '8px' }}>{selectedTask.name}</h2>
                     <p className="govuk-body-s" style={{ color: '#6b7280', marginBottom: 0 }}>
-                      {selectedTask.council} • Assigned to: {selectedTask.assigned_to_name || 'Unassigned'}
+                      {selectedTask.council} • Assigned to: {selectedTask.assignee_name || 'Unassigned'}
                     </p>
                   </div>
                   <span style={{
@@ -357,9 +362,19 @@ export default function QualityControlPage() {
                               </span>
                             )}
                           </div>
-                          <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '4px' }}>
-                            {loc.latitude.toFixed(4)}, {loc.longitude.toFixed(4)}
-                          </div>
+                          {/* Show road name and locality if available */}
+                          {(loc.road_name || loc.locality || loc.nptg_locality_name || loc.town) ? (
+                            <div style={{ fontSize: '11px', color: '#374151', marginTop: '4px' }}>
+                              {loc.road_name && <div style={{ fontWeight: 500 }}>{loc.road_name}</div>}
+                              <div style={{ color: '#6b7280' }}>
+                                {loc.locality || loc.nptg_locality_name || loc.town || ''}
+                              </div>
+                            </div>
+                          ) : (
+                            <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '4px' }}>
+                              {loc.latitude.toFixed(4)}, {loc.longitude.toFixed(4)}
+                            </div>
+                          )}
                           <div style={{ 
                             fontSize: '11px', 
                             color: loc.has_label ? '#10b981' : '#f59e0b', 

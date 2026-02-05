@@ -21,6 +21,7 @@ interface Task {
   total_locations: number
   completed_locations: number
   status: string
+  assignee_name?: string
 }
 
 export default function ExportsPage() {
@@ -71,10 +72,11 @@ export default function ExportsPage() {
 
   const loadTasks = async () => {
     try {
-      const response = await tasksApi.getTasks()
-      // Filter to show only completed or in-progress tasks
+      // Use getAllTasks for managers to see all assigned tasks
+      const response = await tasksApi.getAllTasks({ page: 1, page_size: 500 })
       const allTasks = response.data.tasks || []
-      setTasks(allTasks.filter((t: Task) => ['in_progress', 'completed'].includes(t.status)))
+      // Filter to show only tasks that have been assigned
+      setTasks(allTasks.filter((t: Task) => t.assignee_name && ['assigned', 'in_progress', 'completed'].includes(t.status)))
     } catch (error) {
       console.error('Failed to load tasks:', error)
     }

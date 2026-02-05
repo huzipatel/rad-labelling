@@ -4,6 +4,7 @@ import { labellingApi, tasksApi, commentsApi } from '../services/api'
 import Loading from '../components/common/Loading'
 import ProgressBar from '../components/common/ProgressBar'
 import { Loader } from '@googlemaps/js-api-loader'
+import { useAuthStore } from '../store/authStore'
 
 interface Comment {
   id: string
@@ -84,6 +85,9 @@ export default function LabellingPage({ isQualityControl = false }: LabellingPag
   const { taskId, locationIndex: urlLocationIndex } = useParams<{ taskId: string; locationIndex?: string }>()
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
+  const { user } = useAuthStore()
+  
+  const isManager = user?.role === 'manager' || user?.role === 'admin'
   
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -270,12 +274,10 @@ export default function LabellingPage({ isQualityControl = false }: LabellingPag
           unable_reason: response.data.label.unable_reason || '',
         })
         
-        // Store label ID for comments
+        // Store label ID for comments - load for all users, not just QC
         if (response.data.label.id) {
           setLabelId(response.data.label.id)
-          if (isQualityControl) {
-            loadComments(response.data.label.id)
-          }
+          loadComments(response.data.label.id)
         }
       } else {
         setFormData(defaultLabelData)
@@ -304,7 +306,9 @@ export default function LabellingPage({ isQualityControl = false }: LabellingPag
     if (!labelId || !newComment.trim()) return
     
     try {
-      await commentsApi.createComment(labelId, newComment.trim(), 'feedback')
+      // Managers leave feedback, labellers ask questions
+      const commentType = isManager ? 'feedback' : 'question'
+      await commentsApi.createComment(labelId, newComment.trim(), commentType)
       setNewComment('')
       loadComments(labelId)
     } catch (error) {
@@ -569,8 +573,16 @@ export default function LabellingPage({ isQualityControl = false }: LabellingPag
                       onMouseOver={(e) => e.currentTarget.style.background = '#f9fafb'}
                       onMouseOut={(e) => e.currentTarget.style.background = 'white'}
                     >
-                      <div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontWeight: 500, fontSize: '13px' }}>{loc.identifier}</div>
+                        {/* Show road name and locality if available */}
+                        {(loc.road_name || loc.locality || loc.nptg_locality_name || loc.town) && (
+                          <div style={{ fontSize: '11px', color: '#374151', marginTop: '2px' }}>
+                            {loc.road_name && <span style={{ fontWeight: 500 }}>{loc.road_name}</span>}
+                            {loc.road_name && (loc.locality || loc.nptg_locality_name || loc.town) && ' • '}
+                            {loc.locality || loc.nptg_locality_name || loc.town}
+                          </div>
+                        )}
                         <div style={{ fontSize: '11px', color: '#6b7280' }}>
                           {loc.advertising_present ? '✅ Has advertising' : '❌ No advertising'}
                         </div>
@@ -580,7 +592,9 @@ export default function LabellingPage({ isQualityControl = false }: LabellingPag
                         background: loc.status === 'completed' ? '#dcfce7' : '#fef3c7',
                         color: loc.status === 'completed' ? '#166534' : '#92400e',
                         padding: '2px 6px',
-                        borderRadius: '4px'
+                        borderRadius: '4px',
+                        flexShrink: 0,
+                        marginLeft: '8px'
                       }}>
                         {loc.status}
                       </span>
@@ -1374,8 +1388,8 @@ export default function LabellingPage({ isQualityControl = false }: LabellingPag
         </div>
       </div>
 
-      {/* Comments Section (QC Mode) */}
-      {isQualityControl && labelId && (
+      {/* Comments Section - Available for all users when a label exists */}
+      {labelId && (
         <div style={{ 
           background: 'white', 
           borderRadius: '16px', 
@@ -1385,7 +1399,7 @@ export default function LabellingPage({ isQualityControl = false }: LabellingPag
         }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
             <h2 className="govuk-heading-m" style={{ marginBottom: 0 }}>
-              💬 Feedback & Comments ({comments.length})
+              💬 {isManager ? 'Feedback & Comments' : 'Questions & Feedback'} ({comments.length})
             </h2>
             <button
               onClick={() => setShowComments(!showComments)}
@@ -1409,7 +1423,10 @@ export default function LabellingPage({ isQualityControl = false }: LabellingPag
                 <textarea
                   value={newComment}
                   onChange={(e) => setNewComment(e.target.value)}
-                  placeholder="Add feedback or suggestion for this label..."
+                  placeholder={isManager 
+                    ? "Add feedback or suggestion for this label..." 
+                    : "Ask a question or leave a note for the manager..."
+                  }
                   style={{
                     width: '100%',
                     padding: '12px',
@@ -1426,14 +1443,17 @@ export default function LabellingPage({ isQualityControl = false }: LabellingPag
                   className="govuk-button"
                   style={{ marginTop: '8px', marginBottom: 0 }}
                 >
-                  Add Feedback
+                  {isManager ? 'Add Feedback' : 'Ask Question'}
                 </button>
               </div>
               
               {/* Comment List */}
               {comments.length === 0 ? (
                 <p style={{ color: '#6b7280', textAlign: 'center', padding: '20px' }}>
-                  No comments yet. Add feedback to help the labeller.
+                  {isManager 
+                    ? "No comments yet. Add feedback to help the labeller."
+                    : "No comments yet. Ask a question if you're unsure about this location."
+                  }
                 </p>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>

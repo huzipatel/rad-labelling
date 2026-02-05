@@ -140,7 +140,12 @@ async def get_task_locations(
                 "latitude": loc.latitude,
                 "longitude": loc.longitude,
                 "has_label": str(loc.id) in labels,
-                "label_status": labels.get(str(loc.id), {}).status if str(loc.id) in labels else None
+                "label_status": labels.get(str(loc.id), {}).status if str(loc.id) in labels else None,
+                # Extract common fields from original_data for display
+                "road_name": loc.original_data.get("road_name") or loc.original_data.get("RoadName") or loc.original_data.get("street"),
+                "locality": loc.original_data.get("locality") or loc.original_data.get("Locality") or loc.original_data.get("area") or loc.original_data.get("town"),
+                "town": loc.original_data.get("town") or loc.original_data.get("Town"),
+                "nptg_locality_name": loc.original_data.get("nptg_locality_name") or loc.original_data.get("NptgLocalityName"),
             }
             for loc in locations
         ],
@@ -188,7 +193,12 @@ async def get_labelled_locations(
             "labelled_at": label.updated_at.isoformat() if label.updated_at else None,
             "advertising_present": label.advertising_present,
             "bus_shelter_present": label.bus_shelter_present,
-            "status": label.status
+            "status": label.status,
+            # Extract common fields from original_data for display
+            "road_name": location.original_data.get("road_name") or location.original_data.get("RoadName") or location.original_data.get("street"),
+            "locality": location.original_data.get("locality") or location.original_data.get("Locality") or location.original_data.get("area") or location.original_data.get("town"),
+            "town": location.original_data.get("town") or location.original_data.get("Town"),
+            "nptg_locality_name": location.original_data.get("nptg_locality_name") or location.original_data.get("NptgLocalityName"),
         })
     
     return {
