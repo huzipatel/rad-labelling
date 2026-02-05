@@ -1,9 +1,20 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
-import { labellingApi, tasksApi } from '../services/api'
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
+import { labellingApi, tasksApi, commentsApi } from '../services/api'
 import Loading from '../components/common/Loading'
 import ProgressBar from '../components/common/ProgressBar'
 import { Loader } from '@googlemaps/js-api-loader'
+
+interface Comment {
+  id: string
+  author_name: string
+  content: string
+  comment_type: string
+  is_read: boolean
+  is_resolved: boolean
+  created_at: string
+  replies: Comment[]
+}
 
 interface LocationData {
   id: string
@@ -65,8 +76,13 @@ const defaultLabelData: LabelFormData = {
   unable_reason: '',
 }
 
-export default function LabellingPage() {
-  const { taskId } = useParams<{ taskId: string }>()
+interface LabellingPageProps {
+  isQualityControl?: boolean
+}
+
+export default function LabellingPage({ isQualityControl = false }: LabellingPageProps) {
+  const { taskId, locationIndex: urlLocationIndex } = useParams<{ taskId: string; locationIndex?: string }>()
+  const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   
   const [loading, setLoading] = useState(true)
@@ -82,6 +98,14 @@ export default function LabellingPage() {
   const [showSnapshotsModal, setShowSnapshotsModal] = useState(false)
   const [sidebarHidden, setSidebarHidden] = useState(false)
   const [expandedImage, setExpandedImage] = useState<{ url: string; title: string; zoom: number } | null>(null)
+  const [labelledLocations, setLabelledLocations] = useState<any[]>([])
+  const [showLabelledDropdown, setShowLabelledDropdown] = useState(false)
+  
+  // Comments state (for QC mode)
+  const [comments, setComments] = useState<Comment[]>([])
+  const [newComment, setNewComment] = useState('')
+  const [showComments, setShowComments] = useState(false)
+  const [labelId, setLabelId] = useState<string | null>(null)
   
   // Drag-to-zoom state
   const [zoomBoxes, setZoomBoxes] = useState<{ [key: string]: { x: number; y: number; width: number; height: number } }>({})
@@ -185,17 +209,37 @@ export default function LabellingPage() {
     }
   }, [])
 
+  // Set initial index from URL params (QC mode or query string)
+  useEffect(() => {
+    const indexFromUrl = urlLocationIndex ? parseInt(urlLocationIndex, 10) : null
+    const indexFromQuery = searchParams.get('index') ? parseInt(searchParams.get('index')!, 10) : null
+    const initialIndex = indexFromUrl ?? indexFromQuery ?? 0
+    setCurrentIndex(initialIndex)
+  }, [urlLocationIndex, searchParams])
+  
   useEffect(() => {
     if (taskId) {
-      startTask()
+      if (!isQualityControl) {
+        startTask()
+      }
+      loadLabelledLocations()
     }
-  }, [taskId])
+  }, [taskId, isQualityControl])
 
   useEffect(() => {
     if (taskId) {
       loadLocation(currentIndex)
     }
   }, [currentIndex, taskId])
+  
+  const loadLabelledLocations = async () => {
+    try {
+      const response = await labellingApi.getLabelledLocations(taskId!)
+      setLabelledLocations(response.data.labelled_locations || [])
+    } catch (error) {
+      console.error('Failed to load labelled locations:', error)
+    }
+  }
 
   const startTask = async () => {
     try {
@@ -225,8 +269,18 @@ export default function LabellingPage() {
           unable_to_label: response.data.label.unable_to_label,
           unable_reason: response.data.label.unable_reason || '',
         })
+        
+        // Store label ID for comments
+        if (response.data.label.id) {
+          setLabelId(response.data.label.id)
+          if (isQualityControl) {
+            loadComments(response.data.label.id)
+          }
+        }
       } else {
         setFormData(defaultLabelData)
+        setLabelId(null)
+        setComments([])
       }
       
       // Street View will be initialized by the useEffect when mapsLoaded and location are ready
@@ -234,6 +288,28 @@ export default function LabellingPage() {
       console.error('Failed to load location:', error)
     } finally {
       setLoading(false)
+    }
+  }
+  
+  const loadComments = async (labelIdToLoad: string) => {
+    try {
+      const response = await commentsApi.getLabelComments(labelIdToLoad)
+      setComments(response.data.comments || [])
+    } catch (error) {
+      console.error('Failed to load comments:', error)
+    }
+  }
+  
+  const submitComment = async () => {
+    if (!labelId || !newComment.trim()) return
+    
+    try {
+      await commentsApi.createComment(labelId, newComment.trim(), 'feedback')
+      setNewComment('')
+      loadComments(labelId)
+    } catch (error) {
+      console.error('Failed to submit comment:', error)
+      alert('Failed to submit comment')
     }
   }
 
@@ -300,6 +376,9 @@ export default function LabellingPage() {
     try {
       const result = await labellingApi.saveLabel(taskId, location.id, formData)
       
+      // Refresh labelled locations list
+      loadLabelledLocations()
+      
       if (result.data.is_task_complete) {
         alert('Task completed! Great work.')
         navigate('/tasks')
@@ -349,8 +428,16 @@ export default function LabellingPage() {
         panoId
       )
       
-      loadLocation(currentIndex)
-      alert('Snapshot saved!')
+      // Reload location to get the new snapshot
+      await loadLocation(currentIndex)
+      
+      // Auto-select the new snapshot (snapshots start at index 5)
+      // Get the count of existing snapshots from the reloaded location
+      const snapshots = location.images.filter((img: any) => img.is_user_snapshot)
+      const newSnapshotIndex = 5 + snapshots.length // The new snapshot will be at this index
+      setFormData(prev => ({ ...prev, selected_image: newSnapshotIndex }))
+      
+      alert('Snapshot saved and selected!')
     } catch (error: any) {
       console.error('Failed to save snapshot:', error)
       const message = error?.response?.data?.detail || error?.message || 'Unknown error'
@@ -375,6 +462,18 @@ export default function LabellingPage() {
     setCurrentIndex(index)
     setSearchResults([])
     setSearchQuery('')
+  }
+  
+  const goToLabelledLocation = async (locationId: string) => {
+    try {
+      const response = await labellingApi.getLocationIndexById(taskId!, locationId)
+      if (response.data.found) {
+        setCurrentIndex(response.data.index)
+        setShowLabelledDropdown(false)
+      }
+    } catch (error) {
+      console.error('Failed to find location:', error)
+    }
   }
 
   if (loading) return <Loading />
@@ -416,15 +515,108 @@ export default function LabellingPage() {
               Location {location.index + 1} of {location.total}
             </p>
           </div>
-          <div style={{ width: '200px' }}>
-            <ProgressBar
-              value={location.index + 1}
-              max={location.total}
-              variant="success"
-            />
-            <p className="govuk-body-s" style={{ textAlign: 'right', margin: 0 }}>
-              {Math.round(((location.index + 1) / location.total) * 100)}% Complete
-            </p>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: '16px' }}>
+            {/* Review Previously Labelled Dropdown */}
+            <div style={{ position: 'relative' }}>
+              <button
+                onClick={() => setShowLabelledDropdown(!showLabelledDropdown)}
+                style={{
+                  background: labelledLocations.length > 0 ? '#f0fdf4' : '#f3f4f6',
+                  border: labelledLocations.length > 0 ? '1px solid #10b981' : '1px solid #d1d5db',
+                  borderRadius: '8px',
+                  padding: '8px 12px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  fontSize: '13px',
+                  fontWeight: 500
+                }}
+              >
+                📋 Review ({labelledLocations.length})
+                <span style={{ fontSize: '10px' }}>{showLabelledDropdown ? '▲' : '▼'}</span>
+              </button>
+              {showLabelledDropdown && labelledLocations.length > 0 && (
+                <div style={{
+                  position: 'absolute',
+                  top: '100%',
+                  right: 0,
+                  marginTop: '4px',
+                  background: 'white',
+                  border: '1px solid #e5e7eb',
+                  borderRadius: '8px',
+                  boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                  zIndex: 100,
+                  maxHeight: '300px',
+                  overflowY: 'auto',
+                  minWidth: '280px'
+                }}>
+                  <div style={{ padding: '8px 12px', borderBottom: '1px solid #e5e7eb', background: '#f9fafb' }}>
+                    <span style={{ fontSize: '12px', fontWeight: 600, color: '#6b7280' }}>Previously Labelled</span>
+                  </div>
+                  {labelledLocations.map((loc) => (
+                    <div
+                      key={loc.id}
+                      onClick={() => goToLabelledLocation(loc.id)}
+                      style={{
+                        padding: '10px 12px',
+                        cursor: 'pointer',
+                        borderBottom: '1px solid #f3f4f6',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center'
+                      }}
+                      onMouseOver={(e) => e.currentTarget.style.background = '#f9fafb'}
+                      onMouseOut={(e) => e.currentTarget.style.background = 'white'}
+                    >
+                      <div>
+                        <div style={{ fontWeight: 500, fontSize: '13px' }}>{loc.identifier}</div>
+                        <div style={{ fontSize: '11px', color: '#6b7280' }}>
+                          {loc.advertising_present ? '✅ Has advertising' : '❌ No advertising'}
+                        </div>
+                      </div>
+                      <span style={{ 
+                        fontSize: '10px', 
+                        background: loc.status === 'completed' ? '#dcfce7' : '#fef3c7',
+                        color: loc.status === 'completed' ? '#166534' : '#92400e',
+                        padding: '2px 6px',
+                        borderRadius: '4px'
+                      }}>
+                        {loc.status}
+                      </span>
+                    </div>
+                  ))}
+                  <div style={{ padding: '8px 12px', borderTop: '1px solid #e5e7eb' }}>
+                    <button
+                      onClick={() => navigate(`/labelling/${taskId}/grid`)}
+                      style={{
+                        width: '100%',
+                        background: '#1d70b8',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '6px',
+                        padding: '8px',
+                        fontSize: '12px',
+                        fontWeight: 500,
+                        cursor: 'pointer'
+                      }}
+                    >
+                      View All Locations Grid →
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+            <div style={{ width: '180px' }}>
+              <ProgressBar
+                value={location.index + 1}
+                max={location.total}
+                variant="success"
+              />
+              <p className="govuk-body-s" style={{ textAlign: 'right', margin: 0 }}>
+                {Math.round(((location.index + 1) / location.total) * 100)}% Complete
+              </p>
+            </div>
           </div>
         </div>
         
@@ -1182,6 +1374,118 @@ export default function LabellingPage() {
         </div>
       </div>
 
+      {/* Comments Section (QC Mode) */}
+      {isQualityControl && labelId && (
+        <div style={{ 
+          background: 'white', 
+          borderRadius: '16px', 
+          padding: '24px',
+          marginBottom: '24px',
+          boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+            <h2 className="govuk-heading-m" style={{ marginBottom: 0 }}>
+              💬 Feedback & Comments ({comments.length})
+            </h2>
+            <button
+              onClick={() => setShowComments(!showComments)}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: '#1d70b8',
+                cursor: 'pointer',
+                fontWeight: 500,
+                fontSize: '14px'
+              }}
+            >
+              {showComments ? 'Hide' : 'Show'}
+            </button>
+          </div>
+          
+          {showComments && (
+            <>
+              {/* Add New Comment */}
+              <div style={{ marginBottom: '16px' }}>
+                <textarea
+                  value={newComment}
+                  onChange={(e) => setNewComment(e.target.value)}
+                  placeholder="Add feedback or suggestion for this label..."
+                  style={{
+                    width: '100%',
+                    padding: '12px',
+                    borderRadius: '8px',
+                    border: '1px solid #d1d5db',
+                    minHeight: '80px',
+                    fontSize: '14px',
+                    resize: 'vertical'
+                  }}
+                />
+                <button
+                  onClick={submitComment}
+                  disabled={!newComment.trim()}
+                  className="govuk-button"
+                  style={{ marginTop: '8px', marginBottom: 0 }}
+                >
+                  Add Feedback
+                </button>
+              </div>
+              
+              {/* Comment List */}
+              {comments.length === 0 ? (
+                <p style={{ color: '#6b7280', textAlign: 'center', padding: '20px' }}>
+                  No comments yet. Add feedback to help the labeller.
+                </p>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  {comments.map((comment) => (
+                    <div 
+                      key={comment.id}
+                      style={{
+                        background: comment.comment_type === 'question' ? '#fef3c7' : '#f0f9ff',
+                        borderRadius: '8px',
+                        padding: '12px 16px',
+                        border: comment.comment_type === 'question' ? '1px solid #fcd34d' : '1px solid #bae6fd'
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '4px' }}>
+                        <span style={{ fontWeight: 600, fontSize: '13px' }}>
+                          {comment.author_name}
+                          <span style={{ 
+                            marginLeft: '8px',
+                            fontSize: '11px',
+                            padding: '2px 6px',
+                            borderRadius: '4px',
+                            background: comment.comment_type === 'question' ? '#fef3c7' : '#dbeafe',
+                            color: comment.comment_type === 'question' ? '#92400e' : '#1e40af'
+                          }}>
+                            {comment.comment_type === 'question' ? '❓ Question' : '💡 Feedback'}
+                          </span>
+                        </span>
+                        <span style={{ fontSize: '11px', color: '#6b7280' }}>
+                          {new Date(comment.created_at).toLocaleDateString()}
+                        </span>
+                      </div>
+                      <p style={{ margin: 0, fontSize: '14px' }}>{comment.content}</p>
+                      {comment.is_resolved && (
+                        <span style={{ 
+                          display: 'inline-block',
+                          marginTop: '8px',
+                          fontSize: '11px',
+                          color: '#10b981',
+                          fontWeight: 500
+                        }}>
+                          ✓ Resolved
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
       {/* Sidebar Toggle Button */}
       <button
         onClick={() => setSidebarHidden(!sidebarHidden)}
@@ -1223,9 +1527,20 @@ export default function LabellingPage() {
         zIndex: 50,
         transition: 'left 0.3s ease'
       }}>
-        <span style={{ fontWeight: 500, color: '#6b7280' }}>
-          📍 {location.index + 1} of {location.total} locations
-        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+          {isQualityControl && (
+            <button
+              className="govuk-button govuk-button--secondary"
+              onClick={() => navigate('/quality-control')}
+              style={{ marginBottom: 0 }}
+            >
+              ← Back to QC
+            </button>
+          )}
+          <span style={{ fontWeight: 500, color: '#6b7280' }}>
+            📍 {location.index + 1} of {location.total} locations
+          </span>
+        </div>
         <div style={{ display: 'flex', gap: '12px' }}>
           <button
             className="govuk-button govuk-button--secondary"
@@ -1233,7 +1548,15 @@ export default function LabellingPage() {
             onClick={() => setCurrentIndex(currentIndex - 1)}
             style={{ marginBottom: 0 }}
           >
-            ← Back
+            ← Previous
+          </button>
+          <button
+            className="govuk-button govuk-button--secondary"
+            disabled={currentIndex === location.total - 1 || saving}
+            onClick={() => setCurrentIndex(currentIndex + 1)}
+            style={{ marginBottom: 0 }}
+          >
+            Next →
           </button>
           <button
             className="govuk-button"
@@ -1241,7 +1564,7 @@ export default function LabellingPage() {
             onClick={() => handleSave(true)}
             style={{ marginBottom: 0 }}
           >
-            {saving ? '⏳ Saving...' : currentIndex === location.total - 1 ? '✅ Save & Finish' : '💾 Save & Next →'}
+            {saving ? '⏳ Saving...' : isQualityControl ? '💾 Save Changes' : (currentIndex === location.total - 1 ? '✅ Save & Finish' : '💾 Save & Next →')}
           </button>
         </div>
       </div>

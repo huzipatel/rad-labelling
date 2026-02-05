@@ -9,6 +9,8 @@ import ResetPasswordPage from './pages/ResetPasswordPage'
 import DashboardPage from './pages/DashboardPage'
 import TasksPage from './pages/TasksPage'
 import LabellingPage from './pages/LabellingPage'
+import LabellingGridPage from './pages/LabellingGridPage'
+import QualityControlPage from './pages/QualityControlPage'
 import ManagerDashboard from './pages/ManagerDashboard'
 import AdminPage from './pages/AdminPage'
 import UploadPage from './pages/UploadPage'
@@ -47,6 +49,7 @@ function App() {
         <Route path="dashboard" element={<DashboardPage />} />
         <Route path="tasks" element={<TasksPage />} />
         <Route path="labelling/:taskId" element={<LabellingPage />} />
+        <Route path="labelling/:taskId/grid" element={<LabellingGridPage />} />
         
         {/* Manager routes */}
         <Route 
@@ -86,6 +89,22 @@ function App() {
           element={
             <ProtectedRoute allowedRoles={['labelling_manager', 'admin']}>
               <PerformancePage />
+            </ProtectedRoute>
+          } 
+        />
+        <Route 
+          path="quality-control" 
+          element={
+            <ProtectedRoute allowedRoles={['labelling_manager', 'admin']}>
+              <QualityControlPage />
+            </ProtectedRoute>
+          } 
+        />
+        <Route 
+          path="quality-control/:taskId/location/:locationIndex" 
+          element={
+            <ProtectedRoute allowedRoles={['labelling_manager', 'admin']}>
+              <LabellingPage isQualityControl={true} />
             </ProtectedRoute>
           } 
         />

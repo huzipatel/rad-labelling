@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { notificationsApi, usersApi } from '../services/api'
+import { useNavigate } from 'react-router-dom'
+import { notificationsApi, usersApi, commentsApi } from '../services/api'
 import { useAuthStore } from '../store/authStore'
 import Loading from '../components/common/Loading'
 
@@ -40,8 +41,19 @@ interface AdminUser {
   whatsapp_number: string | null
 }
 
+interface UnreadComment {
+  id: string
+  label_id: string
+  location_identifier: string | null
+  author_name: string
+  content: string
+  comment_type: string
+  created_at: string
+}
+
 export default function NotificationsPage() {
   const { user } = useAuthStore()
+  const navigate = useNavigate()
   const isAdmin = user?.role === 'admin'
   const isManager = user?.role === 'labelling_manager' || user?.role === 'admin'
 
@@ -52,10 +64,30 @@ export default function NotificationsPage() {
   const [admins, setAdmins] = useState<AdminUser[]>([])
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
+  const [unreadComments, setUnreadComments] = useState<UnreadComment[]>([])
 
   useEffect(() => {
     loadData()
+    loadUnreadComments()
   }, [])
+
+  const loadUnreadComments = async () => {
+    try {
+      const response = await commentsApi.getMyUnreadComments()
+      setUnreadComments(response.data.comments || [])
+    } catch (error) {
+      console.error('Failed to load unread comments:', error)
+    }
+  }
+
+  const markCommentAsRead = async (commentId: string) => {
+    try {
+      await commentsApi.markAsRead(commentId)
+      loadUnreadComments()
+    } catch (error) {
+      console.error('Failed to mark comment as read:', error)
+    }
+  }
 
   const loadData = async () => {
     try {
@@ -170,11 +202,101 @@ export default function NotificationsPage() {
 
   return (
     <>
-      <h1 className="govuk-heading-xl">Notification Settings</h1>
+      <h1 className="govuk-heading-xl">Notifications</h1>
+
+      {/* Unread Comments Section */}
+      {unreadComments.length > 0 && (
+        <section className="govuk-!-margin-bottom-8">
+          <div style={{ 
+            background: '#fef3c7', 
+            borderRadius: '12px', 
+            padding: '24px',
+            border: '1px solid #fcd34d',
+            marginBottom: '24px'
+          }}>
+            <h2 className="govuk-heading-m" style={{ marginBottom: '16px' }}>
+              💬 Unread Comments ({unreadComments.length})
+            </h2>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              {unreadComments.map((comment) => (
+                <div 
+                  key={comment.id}
+                  style={{
+                    background: 'white',
+                    borderRadius: '8px',
+                    padding: '16px',
+                    border: '1px solid #e5e7eb',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'flex-start',
+                    gap: '16px'
+                  }}
+                >
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                      <span style={{ fontWeight: 600 }}>{comment.author_name}</span>
+                      <span style={{ 
+                        fontSize: '11px',
+                        padding: '2px 6px',
+                        borderRadius: '4px',
+                        background: comment.comment_type === 'question' ? '#fef3c7' : '#dbeafe',
+                        color: comment.comment_type === 'question' ? '#92400e' : '#1e40af'
+                      }}>
+                        {comment.comment_type === 'question' ? '❓ Question' : '💡 Feedback'}
+                      </span>
+                      <span style={{ fontSize: '12px', color: '#6b7280' }}>
+                        {new Date(comment.created_at).toLocaleDateString()}
+                      </span>
+                    </div>
+                    <p style={{ margin: 0, fontSize: '14px', color: '#374151' }}>{comment.content}</p>
+                    {comment.location_identifier && (
+                      <p style={{ margin: '8px 0 0', fontSize: '12px', color: '#6b7280' }}>
+                        Location: {comment.location_identifier}
+                      </p>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => markCommentAsRead(comment.id)}
+                    style={{
+                      background: '#f3f4f6',
+                      border: 'none',
+                      borderRadius: '6px',
+                      padding: '8px 12px',
+                      fontSize: '12px',
+                      cursor: 'pointer',
+                      whiteSpace: 'nowrap'
+                    }}
+                  >
+                    ✓ Mark Read
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {unreadComments.length === 0 && (
+        <div style={{ 
+          background: '#f0fdf4', 
+          borderRadius: '12px', 
+          padding: '24px',
+          border: '1px solid #bbf7d0',
+          marginBottom: '24px',
+          textAlign: 'center'
+        }}>
+          <span style={{ fontSize: '32px' }}>✅</span>
+          <p style={{ margin: '8px 0 0', color: '#166534', fontWeight: 500 }}>No unread comments</p>
+        </div>
+      )}
+
+      <hr className="govuk-section-break govuk-section-break--l govuk-section-break--visible" />
+
+      <h2 className="govuk-heading-l" style={{ marginTop: '32px' }}>Notification Settings</h2>
 
       {/* User Preferences */}
       <section className="govuk-!-margin-bottom-8">
-        <h2 className="govuk-heading-l">Your Preferences</h2>
+        <h3 className="govuk-heading-m">Your Preferences</h3>
         
         {!user?.whatsapp_number ? (
           <div className="govuk-inset-text">

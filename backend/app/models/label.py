@@ -96,6 +96,11 @@ class Label(Base):
         "User",
         back_populates="labels"
     )
+    comments: Mapped[list["LabelComment"]] = relationship(
+        "LabelComment",
+        back_populates="label",
+        cascade="all, delete-orphan"
+    )
     
     @property
     def labelling_duration_seconds(self) -> Optional[float]:

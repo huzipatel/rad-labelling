@@ -62,6 +62,11 @@ class User(Base):
         "Label",
         back_populates="labeller"
     )
+    comments_authored: Mapped[List["LabelComment"]] = relationship(
+        "LabelComment",
+        back_populates="author",
+        foreign_keys="LabelComment.author_id"
+    )
 
 
 class PasswordReset(Base):

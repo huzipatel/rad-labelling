@@ -1,5 +1,7 @@
+import { useEffect, useState } from 'react'
 import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom'
 import { useAuthStore } from '../../store/authStore'
+import { commentsApi } from '../../services/api'
 
 // Icons as inline SVGs for consistency
 const icons = {
@@ -59,6 +61,23 @@ export default function Layout() {
   const { user, logout } = useAuthStore()
   const navigate = useNavigate()
   const location = useLocation()
+  const [unreadComments, setUnreadComments] = useState(0)
+
+  useEffect(() => {
+    loadUnreadComments()
+    // Poll for new comments every 30 seconds
+    const interval = setInterval(loadUnreadComments, 30000)
+    return () => clearInterval(interval)
+  }, [])
+
+  const loadUnreadComments = async () => {
+    try {
+      const response = await commentsApi.getMyUnreadComments()
+      setUnreadComments(response.data.total || 0)
+    } catch (error) {
+      // Silently fail - don't disrupt the UI
+    }
+  }
 
   const handleLogout = () => {
     logout()
@@ -71,11 +90,12 @@ export default function Layout() {
   const mainNavItems = [
     { path: '/dashboard', label: 'Dashboard', icon: icons.dashboard, show: true },
     { path: '/tasks', label: 'My Tasks', icon: icons.tasks, show: true },
-    { path: '/notifications', label: 'Notifications', icon: icons.notifications, show: true },
+    { path: '/notifications', label: 'Notifications', icon: icons.notifications, show: true, badge: unreadComments > 0 ? unreadComments : undefined },
   ]
 
   const managerNavItems = [
     { path: '/manager', label: 'Manager Dashboard', icon: icons.manager, show: isManager },
+    { path: '/quality-control', label: 'Quality Control', icon: icons.tasks, show: isManager },
     { path: '/upload', label: 'Upload & Enhance', icon: icons.upload, show: isManager },
     { path: '/data', label: 'View Data', icon: icons.data, show: isManager },
     { path: '/performance', label: 'Performance', icon: icons.performance, show: isManager },
@@ -131,9 +151,28 @@ export default function Layout() {
                 key={item.path}
                 to={item.path}
                 className={`app-sidebar__link ${isActive(item.path) ? 'app-sidebar__link--active' : ''}`}
+                style={{ position: 'relative' }}
               >
                 {item.icon}
                 {item.label}
+                {item.badge && (
+                  <span style={{
+                    position: 'absolute',
+                    right: '12px',
+                    top: '50%',
+                    transform: 'translateY(-50%)',
+                    background: '#ef4444',
+                    color: 'white',
+                    fontSize: '11px',
+                    fontWeight: 600,
+                    padding: '2px 6px',
+                    borderRadius: '10px',
+                    minWidth: '18px',
+                    textAlign: 'center'
+                  }}>
+                    {item.badge > 99 ? '99+' : item.badge}
+                  </span>
+                )}
               </Link>
             ))}
           </div>

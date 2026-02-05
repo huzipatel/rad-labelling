@@ -150,6 +150,114 @@ async def get_task_locations(
     }
 
 
+@router.get("/task/{task_id}/labelled")
+async def get_labelled_locations(
+    task_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Get all labelled locations for a task (for review dropdown)."""
+    # Get task
+    result = await db.execute(
+        select(Task).where(Task.id == task_id)
+    )
+    task = result.scalar_one_or_none()
+    
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    # Check access
+    if current_user.role == "labeller" and task.assigned_to != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Get all labels for this task with location info
+    labels_result = await db.execute(
+        select(Label, Location)
+        .join(Location, Label.location_id == Location.id)
+        .where(Label.task_id == task_id)
+        .order_by(Label.updated_at.desc())
+    )
+    results = labels_result.all()
+    
+    labelled_locations = []
+    for label, location in results:
+        labelled_locations.append({
+            "id": str(location.id),
+            "identifier": location.identifier,
+            "label_id": str(label.id),
+            "labelled_at": label.updated_at.isoformat() if label.updated_at else None,
+            "advertising_present": label.advertising_present,
+            "bus_shelter_present": label.bus_shelter_present,
+            "status": label.status
+        })
+    
+    return {
+        "labelled_locations": labelled_locations,
+        "total_labelled": len(labelled_locations),
+        "total_locations": task.total_locations
+    }
+
+
+@router.get("/task/{task_id}/location-by-id/{location_id}")
+async def get_location_by_id(
+    task_id: uuid.UUID,
+    location_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Get the index of a location within a task by its ID."""
+    # Get task
+    result = await db.execute(
+        select(Task).where(Task.id == task_id)
+    )
+    task = result.scalar_one_or_none()
+    
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    # Check access
+    if current_user.role == "labeller" and task.assigned_to != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Handle sample tasks
+    if task.is_sample and task.sample_location_ids:
+        try:
+            index = task.sample_location_ids.index(str(location_id))
+            return {"index": index, "found": True}
+        except ValueError:
+            raise HTTPException(status_code=404, detail="Location not found in task")
+    
+    # Build base query for normal tasks
+    base_query = select(Location).where(Location.location_type_id == task.location_type_id)
+    
+    # Apply task grouping filter
+    if task.group_field and task.group_field.startswith("original_"):
+        original_key = task.group_field.replace("original_", "")
+        from sqlalchemy import text
+        base_query = base_query.where(
+            text(f"original_data->>'{original_key}' = :group_value")
+        ).params(group_value=task.group_value)
+    elif task.group_field == "council" or not task.group_field:
+        base_query = base_query.where(Location.council == (task.group_value or task.council))
+    elif task.group_field == "combined_authority":
+        base_query = base_query.where(Location.combined_authority == task.group_value)
+    elif task.group_field == "road_classification":
+        base_query = base_query.where(Location.road_classification == task.group_value)
+    
+    # Get all locations ordered by identifier to find the index
+    locations_result = await db.execute(
+        base_query.order_by(Location.identifier)
+    )
+    locations = locations_result.scalars().all()
+    
+    # Find the index
+    for idx, loc in enumerate(locations):
+        if loc.id == location_id:
+            return {"index": idx, "found": True}
+    
+    raise HTTPException(status_code=404, detail="Location not found in task")
+
+
 @router.get("/task/{task_id}/location/{location_index}", response_model=LocationLabelResponse)
 async def get_location_for_labelling(
     task_id: uuid.UUID,
@@ -306,6 +414,7 @@ async def get_location_for_labelling(
             for img in images
         ],
         label={
+            "id": str(label.id),
             "advertising_present": label.advertising_present,
             "bus_shelter_present": label.bus_shelter_present,
             "number_of_panels": label.number_of_panels,

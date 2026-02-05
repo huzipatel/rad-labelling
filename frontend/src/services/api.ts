@@ -223,6 +223,10 @@ export const labellingApi = {
     api.get(`/labelling/task/${taskId}/locations`, { params: { page, page_size: pageSize } }),
   getLocationForLabelling: (taskId: string, locationIndex: number) =>
     api.get(`/labelling/task/${taskId}/location/${locationIndex}`),
+  getLabelledLocations: (taskId: string) =>
+    api.get(`/labelling/task/${taskId}/labelled`),
+  getLocationIndexById: (taskId: string, locationId: string) =>
+    api.get(`/labelling/task/${taskId}/location-by-id/${locationId}`),
   searchLocation: (taskId: string, query: string) =>
     api.get(`/labelling/task/${taskId}/search`, { params: { query } }),
   saveLabel: (taskId: string, locationId: string, data: any) =>
@@ -235,6 +239,24 @@ export const labellingApi = {
     }),
   getProgress: (taskId: string) =>
     api.get(`/labelling/task/${taskId}/progress`),
+}
+
+// Comments API
+export const commentsApi = {
+  createComment: (labelId: string, content: string, commentType: string = 'feedback', taggedUserId?: string, parentCommentId?: string) =>
+    api.post(`/comments/label/${labelId}`, { content, comment_type: commentType, tagged_user_id: taggedUserId, parent_comment_id: parentCommentId }),
+  getLabelComments: (labelId: string) =>
+    api.get(`/comments/label/${labelId}`),
+  getMyUnreadComments: () =>
+    api.get('/comments/my-unread'),
+  markAsRead: (commentId: string) =>
+    api.post(`/comments/${commentId}/read`),
+  resolveComment: (commentId: string) =>
+    api.post(`/comments/${commentId}/resolve`),
+  deleteComment: (commentId: string) =>
+    api.delete(`/comments/${commentId}`),
+  getTaskCommentsSummary: (taskId: string) =>
+    api.get(`/comments/task/${taskId}/summary`),
 }
 
 // Spreadsheets API
