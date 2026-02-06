@@ -324,33 +324,23 @@ export const adminApi = {
   notifyManagers: (message: string) =>
     api.post('/admin/notify-managers', null, { params: { message } }),
   
-  // GSV API Key Management
-  getGsvAccounts: () =>
-    api.get('/admin/gsv-accounts'),
-  addGsvAccount: (data: { email: string; billing_id?: string; target_projects?: number }) =>
-    api.post('/admin/gsv-accounts', data),
-  deleteGsvAccount: (accountId: string) =>
-    api.delete(`/admin/gsv-accounts/${accountId}`),
-  addGsvKey: (accountId: string, data: { project_id?: string; api_key: string }) =>
-    api.post(`/admin/gsv-accounts/${accountId}/add-key`, data),
-  bulkAddGsvKeys: (accountId: string, keys: string) =>
-    api.post(`/admin/gsv-accounts/${accountId}/bulk-add-keys`, { keys }),
-  getAllGsvKeys: () =>
-    api.get('/admin/gsv-all-keys'),
-  applyGsvKeys: () =>
-    api.post('/admin/gsv-apply-keys'),
-  
-  // GSV OAuth & Auto-create
-  getGsvOAuthConfig: () =>
-    api.get('/admin/gsv-oauth-config'),
-  getGsvOAuthUrl: () =>
-    api.get('/admin/gsv-oauth-url'),
-  createGsvProjects: (accountId: string, count: number = 5) =>
-    api.post(`/admin/gsv-accounts/${accountId}/create-projects?count=${count}`),
-  generateMissingKeys: (accountId: string) =>
-    api.post(`/admin/gsv-accounts/${accountId}/generate-missing-keys`),
-  syncProjectsFromGcp: (accountId: string) =>
-    api.post(`/admin/gsv-accounts/${accountId}/sync-projects`),
+  // GSV API Key Management (Simplified)
+  getGsvKeys: () =>
+    api.get('/admin/gsv-keys'),
+  bulkAddGsvKeys: (keys: string) =>
+    api.post('/admin/gsv-keys/bulk', { keys }),
+  deleteGsvKey: (keyId: string) =>
+    api.delete(`/admin/gsv-keys/${keyId}`),
+  updateGsvKey: (keyId: string, data: { is_active?: boolean; label?: string }) =>
+    api.patch(`/admin/gsv-keys/${keyId}`, data),
+  resetGsvKey: (keyPrefix: string) =>
+    api.post(`/admin/gsv-keys/reset/${keyPrefix}`),
+  getGsvKeysStatus: () =>
+    api.get('/admin/gsv-keys/status'),
+  syncGsvKeys: () =>
+    api.post('/admin/gsv-keys/sync'),
+  getGsvDiagnostic: () =>
+    api.get('/admin/gsv-diagnostic'),
 }
 
 // Notifications API

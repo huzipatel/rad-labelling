@@ -15,6 +15,19 @@ async def lifespan(app: FastAPI):
     """Application lifespan events."""
     # Startup
     await init_db()
+    
+    # Load GSV API keys from database into key manager
+    try:
+        from app.core.database import get_db
+        from app.services.gsv_key_manager import gsv_key_manager
+        
+        async for db in get_db():
+            key_count = await gsv_key_manager.load_keys_from_db(db)
+            print(f"[Startup] Loaded {key_count} GSV API keys from database")
+            break
+    except Exception as e:
+        print(f"[Startup] Warning: Could not load GSV API keys: {e}")
+    
     yield
     # Shutdown
     await close_db()

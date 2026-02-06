@@ -36,27 +36,29 @@ interface Invitation {
   accepted_at: string | null
 }
 
-interface GsvProject {
-  project_id: string
-  api_key: string
-  added_at?: string
-}
-
-interface GsvAccount {
+interface GsvKey {
   id: string
-  email: string
-  billing_id: string
-  target_projects: number
-  projects: GsvProject[]
+  api_key: string
+  api_key_prefix: string
+  label: string | null
+  is_active: boolean
+  requests_today: number
+  requests_total: number
+  last_used_at: string | null
+  consecutive_errors: number
+  last_error_at: string | null
+  last_error_message: string | null
+  quota_exhausted: boolean
   created_at: string
-  connected?: boolean
-  connected_at?: string
+  status: string
 }
 
-interface GsvStats {
-  total_accounts: number
-  total_projects: number
+interface GsvSummary {
   total_keys: number
+  active_keys: number
+  exhausted_keys: number
+  disabled_keys: number
+  total_requests_today: number
   daily_capacity: number
   estimated_hours_for_1_7m: number
 }
@@ -90,27 +92,13 @@ export default function AdminPage() {
     message: '',
   })
   
-  // GSV Keys state
-  const [gsvAccounts, setGsvAccounts] = useState<GsvAccount[]>([])
-  const [gsvStats, setGsvStats] = useState<GsvStats | null>(null)
+  // GSV Keys state (simplified)
+  const [gsvKeys, setGsvKeys] = useState<GsvKey[]>([])
+  const [gsvSummary, setGsvSummary] = useState<GsvSummary | null>(null)
   const [gsvLoading, setGsvLoading] = useState(false)
-  const [addAccountModalOpen, setAddAccountModalOpen] = useState(false)
   const [addKeysModalOpen, setAddKeysModalOpen] = useState(false)
-  const [selectedGsvAccount, setSelectedGsvAccount] = useState<GsvAccount | null>(null)
-  const [newAccountData, setNewAccountData] = useState({ email: '', billing_id: '', target_projects: 30 })
   const [bulkKeysText, setBulkKeysText] = useState('')
-  const [allKeysString, setAllKeysString] = useState('')
-  const [applyingKeys, setApplyingKeys] = useState(false)
-  const [creatingProjects, setCreatingProjects] = useState<string | null>(null)
-  const [generatingKeys, setGeneratingKeys] = useState<string | null>(null)
-  const [syncingProjects, setSyncingProjects] = useState<string | null>(null)
-  const [projectCountToCreate, setProjectCountToCreate] = useState(5)
-  const [oauthConfig, setOauthConfig] = useState<{
-    backend_url: string
-    redirect_uri: string
-    google_client_id_set: boolean
-    instructions: string[]
-  } | null>(null)
+  const [syncingKeys, setSyncingKeys] = useState(false)
   
   const [formData, setFormData] = useState({
     email: '',
@@ -327,204 +315,78 @@ export default function AdminPage() {
     )
   }
 
-  // GSV Key Management Functions
+  // GSV Key Management Functions (simplified)
   const loadGsvData = async () => {
     setGsvLoading(true)
     try {
-      const accountsRes = await adminApi.getGsvAccounts()
-      setGsvAccounts(accountsRes.data?.accounts || [])
-      setGsvStats(accountsRes.data?.stats || null)
-    } catch (error) {
-      console.error('Failed to load GSV accounts:', error)
-      setGsvAccounts([])
-      setGsvStats(null)
-    }
-    
-    try {
-      const keysRes = await adminApi.getAllGsvKeys()
-      setAllKeysString(keysRes.data?.keys_string || '')
+      const response = await adminApi.getGsvKeys()
+      setGsvKeys(response.data?.keys || [])
+      setGsvSummary(response.data?.summary || null)
     } catch (error) {
       console.error('Failed to load GSV keys:', error)
-      setAllKeysString('')
+      setGsvKeys([])
+      setGsvSummary(null)
     }
-    
-    try {
-      const configRes = await adminApi.getGsvOAuthConfig()
-      setOauthConfig(configRes.data)
-    } catch (error) {
-      console.error('Failed to load OAuth config:', error)
-      setOauthConfig(null)
-    }
-    
     setGsvLoading(false)
   }
 
-  const handleAddGsvAccount = async () => {
-    if (!newAccountData.email) {
-      alert('Please enter an email address')
-      return
-    }
-    try {
-      await adminApi.addGsvAccount(newAccountData)
-      setAddAccountModalOpen(false)
-      setNewAccountData({ email: '', billing_id: '', target_projects: 30 })
-      loadGsvData()
-    } catch (error: any) {
-      alert(error.response?.data?.detail || 'Failed to add account')
-    }
-  }
-
-  const handleDeleteGsvAccount = async (accountId: string) => {
-    if (!confirm('Delete this account and all its keys?')) return
-    try {
-      await adminApi.deleteGsvAccount(accountId)
-      loadGsvData()
-    } catch (error) {
-      console.error('Failed to delete account:', error)
-    }
-  }
-
   const handleBulkAddKeys = async () => {
-    if (!selectedGsvAccount || !bulkKeysText.trim()) {
+    if (!bulkKeysText.trim()) {
       alert('Please enter API keys')
       return
     }
     try {
-      const result = await adminApi.bulkAddGsvKeys(selectedGsvAccount.id, bulkKeysText)
-      alert(`Added ${result.data.added} keys`)
+      const result = await adminApi.bulkAddGsvKeys(bulkKeysText)
+      alert(result.data.message || `Added ${result.data.added} keys`)
       setAddKeysModalOpen(false)
       setBulkKeysText('')
-      setSelectedGsvAccount(null)
       loadGsvData()
     } catch (error: any) {
       alert(error.response?.data?.detail || 'Failed to add keys')
     }
   }
 
-  const handleCopyAllKeys = () => {
-    if (!allKeysString) {
-      alert('No keys to copy')
-      return
-    }
-    navigator.clipboard.writeText(allKeysString)
-    alert('All keys copied to clipboard! Paste into Render GSV_API_KEYS environment variable.')
-  }
-
-  const handleApplyKeys = async () => {
-    if (!confirm('Apply all stored keys to the running application?')) return
-    setApplyingKeys(true)
+  const handleDeleteGsvKey = async (keyId: string) => {
+    if (!confirm('Delete this API key?')) return
     try {
-      const result = await adminApi.applyGsvKeys()
-      alert(result.data.message || `Applied ${result.data.keys_applied} keys`)
+      await adminApi.deleteGsvKey(keyId)
       loadGsvData()
     } catch (error: any) {
-      alert(error.response?.data?.detail || 'Failed to apply keys')
+      alert(error.response?.data?.detail || 'Failed to delete key')
+    }
+  }
+
+  const handleToggleGsvKey = async (keyId: string, currentActive: boolean) => {
+    try {
+      await adminApi.updateGsvKey(keyId, { is_active: !currentActive })
+      loadGsvData()
+    } catch (error: any) {
+      alert(error.response?.data?.detail || 'Failed to update key')
+    }
+  }
+
+  const handleResetGsvKey = async (keyPrefix: string) => {
+    try {
+      await adminApi.resetGsvKey(keyPrefix)
+      alert('Key reset successfully')
+      loadGsvData()
+    } catch (error: any) {
+      alert(error.response?.data?.detail || 'Failed to reset key')
+    }
+  }
+
+  const handleSyncGsvKeys = async () => {
+    setSyncingKeys(true)
+    try {
+      await adminApi.syncGsvKeys()
+      loadGsvData()
+    } catch (error: any) {
+      alert(error.response?.data?.detail || 'Failed to sync keys')
     } finally {
-      setApplyingKeys(false)
+      setSyncingKeys(false)
     }
   }
 
-  const handleConnectGoogleAccount = async () => {
-    // Check if OAuth is configured
-    if (oauthConfig?.backend_url.includes('NOT SET')) {
-      alert('Cannot sign in with Google: BACKEND_URL is not configured in Render.\n\nPlease add the environment variable:\nBACKEND_URL=https://your-backend.onrender.com')
-      return
-    }
-    
-    try {
-      const result = await adminApi.getGsvOAuthUrl()
-      console.log('OAuth URL redirect_uri:', result.data.redirect_uri)
-      // Open OAuth URL in a new window or redirect
-      window.location.href = result.data.oauth_url
-    } catch (error: any) {
-      const errorDetail = error.response?.data?.detail || 'Failed to get OAuth URL.'
-      alert(`${errorDetail}\n\nMake sure:\n1. GOOGLE_CLIENT_ID is configured\n2. BACKEND_URL is set correctly\n3. The redirect URI is added to Google Cloud Console`)
-    }
-  }
-
-  const handleCreateProjects = async (accountId: string) => {
-    if (!confirm(`Create ${projectCountToCreate} new Google Cloud projects? This may take a few minutes.`)) return
-    setCreatingProjects(accountId)
-    try {
-      const result = await adminApi.createGsvProjects(accountId, projectCountToCreate)
-      
-      let message = `Created ${result.data.created} projects with API keys!\n${result.data.failed} failed.`
-      
-      // Show helpful error message if all failed
-      if (result.data.error_help) {
-        message += `\n\n${result.data.error_help}`
-      }
-      
-      // Show specific errors if any
-      if (result.data.failed_projects && result.data.failed_projects.length > 0) {
-        message += `\n\nFirst error: ${result.data.failed_projects[0]?.error || 'Unknown'}`
-      }
-      
-      alert(message)
-      loadGsvData()
-    } catch (error: any) {
-      const detail = error.response?.data?.detail || 'Failed to create projects'
-      alert(`Error: ${detail}\n\nFor personal Google accounts, you may need to create projects manually in Google Cloud Console.`)
-    } finally {
-      setCreatingProjects(null)
-    }
-  }
-
-  const handleGenerateMissingKeys = async (accountId: string) => {
-    const account = gsvAccounts.find(a => a.id === accountId)
-    const projectsWithoutKeys = account?.projects?.filter(p => !p.api_key).length || 0
-    
-    if (projectsWithoutKeys === 0) {
-      alert('All projects already have API keys!')
-      return
-    }
-    
-    if (!confirm(`Generate API keys for ${projectsWithoutKeys} projects without keys? This may take a few minutes.`)) return
-    
-    setGeneratingKeys(accountId)
-    try {
-      const result = await adminApi.generateMissingKeys(accountId)
-      alert(`Generated ${result.data.generated} keys!\n${result.data.failed} failed.\nTotal keys: ${result.data.total_keys}`)
-      loadGsvData()
-    } catch (error: any) {
-      alert(error.response?.data?.detail || 'Failed to generate keys')
-    } finally {
-      setGeneratingKeys(null)
-    }
-  }
-
-  const handleSyncProjects = async (accountId: string) => {
-    if (!confirm('Sync projects from Google Cloud Console? This will import any existing projects.')) return
-    
-    setSyncingProjects(accountId)
-    try {
-      const result = await adminApi.syncProjectsFromGcp(accountId)
-      alert(`${result.data.message}\n\nFound: ${result.data.projects_found}\nAdded: ${result.data.added}\nSkipped: ${result.data.skipped}`)
-      loadGsvData()
-    } catch (error: any) {
-      alert(error.response?.data?.detail || 'Failed to sync projects')
-    } finally {
-      setSyncingProjects(null)
-    }
-  }
-
-  // Check for OAuth callback params
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search)
-    const gsvConnected = params.get('gsv_connected')
-    const gsvError = params.get('gsv_error')
-    
-    if (gsvConnected) {
-      alert(`Successfully connected Google account: ${gsvConnected}`)
-      window.history.replaceState({}, '', '/admin')
-      setActiveTab('gsv-keys')
-      loadGsvData()
-    }
-    if (gsvError) {
-      alert(`Failed to connect Google account: ${gsvError}`)
-      window.history.replaceState({}, '', '/admin')
-    }
-  }, [])
 
   if (loading) return <Loading />
 
@@ -800,113 +662,34 @@ export default function AdminPage() {
           </section>
         )}
 
-        {/* GSV API Keys Tab */}
+        {/* GSV API Keys Tab - Simplified */}
         {activeTab === 'gsv-keys' && (
           <section className="govuk-tabs__panel" id="gsv-keys">
             <h2 className="govuk-heading-l">GSV API Key Management</h2>
             
-            {/* Capacity Calculator */}
-            {gsvStats && (
+            {/* Summary Stats */}
+            {gsvSummary && (
               <div className="stats-grid govuk-!-margin-bottom-6" style={{ gridTemplateColumns: 'repeat(5, 1fr)' }}>
                 <div className="stat-card">
-                  <span className="stat-card__value">{gsvStats.total_accounts}</span>
-                  <span className="stat-card__label">Accounts</span>
+                  <span className="stat-card__value">{gsvSummary.total_keys}</span>
+                  <span className="stat-card__label">Total Keys</span>
                 </div>
                 <div className="stat-card">
-                  <span className="stat-card__value" style={{ color: '#10b981' }}>{gsvStats.total_projects}</span>
-                  <span className="stat-card__label">Projects</span>
+                  <span className="stat-card__value" style={{ color: '#10b981' }}>{gsvSummary.active_keys}</span>
+                  <span className="stat-card__label">Active</span>
                 </div>
                 <div className="stat-card">
-                  <span className="stat-card__value" style={{ color: '#7c3aed' }}>{gsvStats.total_keys}</span>
-                  <span className="stat-card__label">API Keys</span>
+                  <span className="stat-card__value" style={{ color: '#ef4444' }}>{gsvSummary.exhausted_keys}</span>
+                  <span className="stat-card__label">Exhausted</span>
                 </div>
                 <div className="stat-card">
-                  <span className="stat-card__value" style={{ color: '#f59e0b' }}>{gsvStats.daily_capacity.toLocaleString()}</span>
+                  <span className="stat-card__value" style={{ color: '#f59e0b' }}>{gsvSummary.total_requests_today.toLocaleString()}</span>
+                  <span className="stat-card__label">Requests Today</span>
+                </div>
+                <div className="stat-card">
+                  <span className="stat-card__value" style={{ color: '#7c3aed' }}>{gsvSummary.daily_capacity.toLocaleString()}</span>
                   <span className="stat-card__label">Daily Capacity</span>
                 </div>
-                <div className="stat-card">
-                  <span className="stat-card__value" style={{ color: gsvStats.estimated_hours_for_1_7m < 24 ? '#10b981' : '#ef4444' }}>
-                    {gsvStats.estimated_hours_for_1_7m > 0 ? `${gsvStats.estimated_hours_for_1_7m}h` : '∞'}
-                  </span>
-                  <span className="stat-card__label">Time for 1.7M</span>
-                </div>
-              </div>
-            )}
-
-            {/* OAuth Config Status */}
-            {oauthConfig && (
-              <div style={{ 
-                background: oauthConfig.backend_url.includes('NOT SET') 
-                  ? 'rgba(239, 68, 68, 0.1)' 
-                  : 'rgba(16, 185, 129, 0.1)', 
-                border: `1px solid ${oauthConfig.backend_url.includes('NOT SET') 
-                  ? 'rgba(239, 68, 68, 0.3)' 
-                  : 'rgba(16, 185, 129, 0.3)'}`,
-                borderRadius: '8px',
-                padding: '16px',
-                marginBottom: '16px'
-              }}>
-                <h3 style={{ 
-                  color: oauthConfig.backend_url.includes('NOT SET') ? '#ef4444' : '#10b981', 
-                  marginBottom: '12px', 
-                  fontSize: '1rem' 
-                }}>
-                  {oauthConfig.backend_url.includes('NOT SET') ? '⚠️ OAuth Not Configured' : '✅ OAuth Configuration'}
-                </h3>
-                
-                {oauthConfig.backend_url.includes('NOT SET') ? (
-                  <div>
-                    <p style={{ color: '#ef4444', marginBottom: '8px' }}>
-                      <strong>BACKEND_URL</strong> is not set! Google Sign-in will not work.
-                    </p>
-                    <p style={{ color: '#666' }}>
-                      Add this environment variable in Render: <code>BACKEND_URL=https://your-backend.onrender.com</code>
-                    </p>
-                  </div>
-                ) : (
-                  <div>
-                    <p style={{ marginBottom: '8px' }}>
-                      <strong>Backend URL:</strong> <code style={{ color: '#10b981' }}>{oauthConfig.backend_url}</code>
-                    </p>
-                    <p style={{ marginBottom: '8px' }}>
-                      <strong>Redirect URI:</strong> <code style={{ 
-                        background: '#0d1117', 
-                        padding: '4px 8px', 
-                        borderRadius: '4px',
-                        color: '#58a6ff',
-                        fontSize: '0.85rem'
-                      }}>{oauthConfig.redirect_uri}</code>
-                      <button 
-                        onClick={() => {
-                          navigator.clipboard.writeText(oauthConfig.redirect_uri)
-                          alert('Redirect URI copied to clipboard!')
-                        }}
-                        style={{ 
-                          marginLeft: '8px', 
-                          padding: '4px 8px', 
-                          background: '#333', 
-                          color: '#fff', 
-                          border: 'none', 
-                          borderRadius: '4px',
-                          cursor: 'pointer',
-                          fontSize: '0.75rem'
-                        }}
-                      >
-                        📋 Copy
-                      </button>
-                    </p>
-                    <details style={{ marginTop: '8px' }}>
-                      <summary style={{ cursor: 'pointer', color: '#888', fontSize: '0.9rem' }}>
-                        📝 Google Cloud Console Setup Instructions
-                      </summary>
-                      <ol style={{ marginLeft: '20px', color: '#666', marginTop: '8px', fontSize: '0.9rem' }}>
-                        {oauthConfig.instructions.map((instruction, i) => (
-                          <li key={i} style={{ marginBottom: '4px' }}>{instruction}</li>
-                        ))}
-                      </ol>
-                    </details>
-                  </div>
-                )}
               </div>
             )}
 
@@ -918,253 +701,141 @@ export default function AdminPage() {
               padding: '16px',
               marginBottom: '24px'
             }}>
-              <h3 style={{ color: '#7c3aed', marginBottom: '12px', fontSize: '1rem' }}>📋 Two Ways to Add API Keys</h3>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
-                <div>
-                  <strong style={{ color: '#10b981' }}>🚀 Automatic (Recommended)</strong>
-                  <ol style={{ marginLeft: '20px', color: '#666', marginBottom: 0, marginTop: '8px' }}>
-                    <li>Click "Sign in with Google"</li>
-                    <li>Authorize cloud permissions</li>
-                    <li>Click "Auto-Create Projects"</li>
-                    <li>Keys are generated automatically!</li>
-                  </ol>
-                </div>
-                <div>
-                  <strong style={{ color: '#6b7280' }}>📝 Manual</strong>
-                  <ol style={{ marginLeft: '20px', color: '#666', marginBottom: 0, marginTop: '8px' }}>
-                    <li>Create projects in Google Cloud Console</li>
-                    <li>Generate API keys manually</li>
-                    <li>Click "Add Keys Manually" and paste</li>
-                  </ol>
-                </div>
-              </div>
+              <h3 style={{ color: '#7c3aed', marginBottom: '12px', fontSize: '1rem' }}>📋 How to Add API Keys</h3>
+              <ol style={{ marginLeft: '20px', color: '#666', marginBottom: 0 }}>
+                <li>Create projects in <a href="https://console.cloud.google.com" target="_blank" rel="noopener noreferrer">Google Cloud Console</a></li>
+                <li>Enable the Street View Static API for each project</li>
+                <li>Generate API keys (restrict to Street View Static API)</li>
+                <li>Click "Add Keys" below and paste all keys (comma or newline separated)</li>
+              </ol>
             </div>
 
             {/* Action Buttons */}
             <div className="govuk-button-group govuk-!-margin-bottom-4">
               <button 
                 className="govuk-button"
-                onClick={handleConnectGoogleAccount}
-                style={{ background: '#4285f4' }}
+                onClick={() => setAddKeysModalOpen(true)}
               >
-                🔗 Sign in with Google
-              </button>
-              <button className="govuk-button govuk-button--secondary" onClick={() => setAddAccountModalOpen(true)}>
-                + Add Keys Manually
+                + Add Keys
               </button>
               <button 
                 className="govuk-button govuk-button--secondary" 
-                onClick={handleCopyAllKeys}
-                disabled={!allKeysString}
+                onClick={handleSyncGsvKeys}
+                disabled={syncingKeys}
               >
-                📋 Copy All Keys
-              </button>
-              <button 
-                className="govuk-button govuk-button--warning" 
-                onClick={handleApplyKeys}
-                disabled={applyingKeys || !allKeysString}
-              >
-                {applyingKeys ? 'Applying...' : '⚡ Apply to App'}
+                {syncingKeys ? 'Syncing...' : '🔄 Sync Keys'}
               </button>
             </div>
 
-            {/* All Keys Display */}
-            {allKeysString && (
-              <div style={{ marginBottom: '24px' }}>
-                <label className="govuk-label govuk-!-font-weight-bold">All API Keys (for Render GSV_API_KEYS)</label>
-                <div style={{ 
-                  background: '#0d1117', 
-                  border: '1px solid #30363d',
-                  borderRadius: '8px',
-                  padding: '12px',
-                  fontFamily: 'monospace',
-                  fontSize: '12px',
-                  maxHeight: '100px',
-                  overflowY: 'auto',
-                  wordBreak: 'break-all',
-                  color: '#58a6ff'
-                }}>
-                  {allKeysString}
-                </div>
-              </div>
-            )}
-
-            {/* Accounts List */}
+            {/* Keys List */}
             {gsvLoading ? (
               <Loading />
-            ) : gsvAccounts.length === 0 ? (
+            ) : gsvKeys.length === 0 ? (
               <p className="govuk-body" style={{ color: '#6b7280', textAlign: 'center', padding: '40px' }}>
-                No accounts added yet. Click "Add Account" to get started.
+                No API keys added yet. Click "Add Keys" to get started.
               </p>
             ) : (
-              <div>
-                {gsvAccounts.map((account) => (
-                  <div key={account.id} style={{
-                    background: 'rgba(255,255,255,0.05)',
-                    border: account.connected ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(255,255,255,0.1)',
-                    borderRadius: '12px',
-                    padding: '20px',
-                    marginBottom: '16px'
-                  }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                      <div>
-                        <strong style={{ color: '#00d4ff' }}>{account.email}</strong>
-                        {account.connected && (
-                          <span style={{ 
-                            marginLeft: '12px', 
-                            padding: '2px 8px', 
-                            borderRadius: '10px',
-                            fontSize: '0.75rem',
-                            background: 'rgba(16, 185, 129, 0.2)',
-                            color: '#10b981'
-                          }}>
-                            ✓ Connected
-                          </span>
-                        )}
-                        {account.billing_id && (
-                          <span style={{ color: '#888', marginLeft: '12px', fontSize: '0.9rem' }}>
-                            Billing: {account.billing_id}
-                          </span>
-                        )}
-                      </div>
-                      <span style={{ 
-                        padding: '4px 12px', 
-                        borderRadius: '20px', 
-                        fontSize: '0.85rem',
-                        background: account.projects.length > 0 ? 'rgba(16, 185, 129, 0.2)' : 'rgba(245, 158, 11, 0.2)',
-                        color: account.projects.length > 0 ? '#10b981' : '#f59e0b'
-                      }}>
-                        {account.projects.filter(p => p.api_key).length} keys
-                      </span>
-                    </div>
-                    
-                    {/* Progress Bar */}
-                    <div style={{ height: '8px', background: 'rgba(255,255,255,0.1)', borderRadius: '4px', marginBottom: '12px' }}>
-                      <div style={{ 
-                        height: '100%', 
-                        width: `${Math.min((account.projects.length / account.target_projects) * 100, 100)}%`,
-                        background: 'linear-gradient(90deg, #00d4ff, #7c3aed)',
-                        borderRadius: '4px'
-                      }} />
-                    </div>
-                    
-                    {/* Current Stats */}
-                    <div style={{ 
-                      display: 'flex', 
-                      gap: '16px', 
-                      marginBottom: '12px',
-                      padding: '8px 12px',
-                      background: 'rgba(0,0,0,0.2)',
-                      borderRadius: '6px',
-                      fontSize: '0.9rem'
+              <table className="govuk-table">
+                <thead className="govuk-table__head">
+                  <tr className="govuk-table__row">
+                    <th className="govuk-table__header">Key</th>
+                    <th className="govuk-table__header">Label</th>
+                    <th className="govuk-table__header">Status</th>
+                    <th className="govuk-table__header">Requests Today</th>
+                    <th className="govuk-table__header">Total Requests</th>
+                    <th className="govuk-table__header">Last Used</th>
+                    <th className="govuk-table__header">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="govuk-table__body">
+                  {gsvKeys.map((key) => (
+                    <tr key={key.id} className="govuk-table__row" style={{ 
+                      opacity: key.is_active ? 1 : 0.5,
+                      background: key.quota_exhausted ? 'rgba(239, 68, 68, 0.1)' : 'transparent'
                     }}>
-                      <span>
-                        <strong style={{ color: '#10b981' }}>{account.projects?.length || 0}</strong> projects
-                      </span>
-                      <span>
-                        <strong style={{ color: '#7c3aed' }}>{account.projects?.filter(p => p.api_key).length || 0}</strong> API keys
-                      </span>
-                      <span>
-                        <strong style={{ color: '#f59e0b' }}>{((account.projects?.filter(p => p.api_key).length || 0) * 25000).toLocaleString()}</strong> daily capacity
-                      </span>
-                    </div>
-
-                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
-                      {account.connected && (
-                        <>
-                          <button 
-                            className="govuk-button"
-                            style={{ margin: 0, padding: '8px 16px', fontSize: '14px', background: '#6366f1' }}
-                            onClick={() => handleSyncProjects(account.id)}
-                            disabled={syncingProjects === account.id || creatingProjects === account.id || generatingKeys === account.id}
+                      <td className="govuk-table__cell" style={{ fontFamily: 'monospace', fontSize: '12px' }}>
+                        {key.api_key}
+                      </td>
+                      <td className="govuk-table__cell">{key.label || '-'}</td>
+                      <td className="govuk-table__cell">
+                        <span style={{ 
+                          padding: '4px 8px', 
+                          borderRadius: '12px',
+                          fontSize: '0.75rem',
+                          background: key.status === 'active' ? 'rgba(16, 185, 129, 0.2)' 
+                            : key.status === 'quota_exhausted' ? 'rgba(239, 68, 68, 0.2)'
+                            : key.status === 'errors' ? 'rgba(245, 158, 11, 0.2)'
+                            : 'rgba(107, 114, 128, 0.2)',
+                          color: key.status === 'active' ? '#10b981' 
+                            : key.status === 'quota_exhausted' ? '#ef4444'
+                            : key.status === 'errors' ? '#f59e0b'
+                            : '#6b7280'
+                        }}>
+                          {key.status === 'active' ? '✓ Active' 
+                            : key.status === 'quota_exhausted' ? '✗ Exhausted'
+                            : key.status === 'errors' ? '⚠ Errors'
+                            : '○ Disabled'}
+                        </span>
+                      </td>
+                      <td className="govuk-table__cell">{key.requests_today.toLocaleString()}</td>
+                      <td className="govuk-table__cell">{key.requests_total.toLocaleString()}</td>
+                      <td className="govuk-table__cell" style={{ fontSize: '0.85rem' }}>
+                        {key.last_used_at 
+                          ? new Date(key.last_used_at).toLocaleString() 
+                          : 'Never'}
+                      </td>
+                      <td className="govuk-table__cell">
+                        <div style={{ display: 'flex', gap: '4px' }}>
+                          <button
+                            onClick={() => handleToggleGsvKey(key.id, key.is_active)}
+                            style={{ 
+                              padding: '4px 8px', 
+                              fontSize: '12px',
+                              background: key.is_active ? '#6b7280' : '#10b981',
+                              color: '#fff',
+                              border: 'none',
+                              borderRadius: '4px',
+                              cursor: 'pointer'
+                            }}
                           >
-                            {syncingProjects === account.id ? '⏳ Syncing...' : '🔄 Sync from GCP'}
+                            {key.is_active ? 'Disable' : 'Enable'}
                           </button>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                            <input 
-                              type="number"
-                              min="1"
-                              max="100"
-                              value={projectCountToCreate}
-                              onChange={(e) => setProjectCountToCreate(Math.max(1, Math.min(100, parseInt(e.target.value) || 1)))}
+                          {(key.quota_exhausted || key.consecutive_errors > 0) && (
+                            <button
+                              onClick={() => handleResetGsvKey(key.api_key_prefix)}
                               style={{ 
-                                padding: '8px', 
-                                borderRadius: '4px', 
-                                border: '1px solid #ccc',
-                                fontSize: '14px',
-                                width: '70px',
-                                textAlign: 'center'
+                                padding: '4px 8px', 
+                                fontSize: '12px',
+                                background: '#f59e0b',
+                                color: '#fff',
+                                border: 'none',
+                                borderRadius: '4px',
+                                cursor: 'pointer'
                               }}
-                            />
-                            <span style={{ color: '#888', fontSize: '0.9rem' }}>projects</span>
-                          </div>
-                          <button 
-                            className="govuk-button"
-                            style={{ margin: 0, padding: '8px 16px', fontSize: '14px', background: '#10b981' }}
-                            onClick={() => handleCreateProjects(account.id)}
-                            disabled={creatingProjects === account.id || generatingKeys === account.id || syncingProjects === account.id}
-                          >
-                            {creatingProjects === account.id ? '⏳ Creating...' : '🚀 Auto-Create Projects'}
-                          </button>
-                          {/* Show generate keys button if there are projects without keys */}
-                          {account.projects && account.projects.filter(p => !p.api_key).length > 0 && (
-                            <button 
-                              className="govuk-button"
-                              style={{ margin: 0, padding: '8px 16px', fontSize: '14px', background: '#f59e0b' }}
-                              onClick={() => handleGenerateMissingKeys(account.id)}
-                              disabled={generatingKeys === account.id || creatingProjects === account.id || syncingProjects === account.id}
                             >
-                              {generatingKeys === account.id ? '⏳ Generating...' : `🔑 Generate ${account.projects.filter(p => !p.api_key).length} Missing Keys`}
+                              Reset
                             </button>
                           )}
-                        </>
-                      )}
-                      <button 
-                        className="govuk-button govuk-button--secondary"
-                        style={{ margin: 0, padding: '8px 16px', fontSize: '14px' }}
-                        onClick={() => {
-                          setSelectedGsvAccount(account)
-                          setAddKeysModalOpen(true)
-                        }}
-                      >
-                        + Add Keys Manually
-                      </button>
-                      <button 
-                        className="govuk-button govuk-button--warning"
-                        style={{ margin: 0, padding: '8px 16px', fontSize: '14px' }}
-                        onClick={() => handleDeleteGsvAccount(account.id)}
-                      >
-                        🗑️ Delete
-                      </button>
-                    </div>
-                    
-                    {/* Show keys if any */}
-                    {account.projects.length > 0 && (
-                      <details style={{ marginTop: '12px' }}>
-                        <summary style={{ cursor: 'pointer', color: '#888' }}>
-                          View {account.projects.length} keys
-                        </summary>
-                        <div style={{ 
-                          marginTop: '8px', 
-                          padding: '8px', 
-                          background: '#0d1117', 
-                          borderRadius: '4px',
-                          fontFamily: 'monospace',
-                          fontSize: '11px',
-                          maxHeight: '150px',
-                          overflowY: 'auto'
-                        }}>
-                          {account.projects.map((p, i) => (
-                            <div key={i} style={{ color: '#58a6ff', marginBottom: '4px' }}>
-                              {p.api_key || 'No key'}
-                            </div>
-                          ))}
+                          <button
+                            onClick={() => handleDeleteGsvKey(key.id)}
+                            style={{ 
+                              padding: '4px 8px', 
+                              fontSize: '12px',
+                              background: '#ef4444',
+                              color: '#fff',
+                              border: 'none',
+                              borderRadius: '4px',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            Delete
+                          </button>
                         </div>
-                      </details>
-                    )}
-                  </div>
-                ))}
-              </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             )}
           </section>
         )}
@@ -1407,97 +1078,34 @@ export default function AdminPage() {
         </div>
       </Modal>
 
-      {/* Add GSV Account Modal */}
-      <Modal
-        isOpen={addAccountModalOpen}
-        onClose={() => {
-          setAddAccountModalOpen(false)
-          setNewAccountData({ email: '', billing_id: '', target_projects: 30 })
-        }}
-        title="Add Google Account"
-      >
-        <p className="govuk-body govuk-!-margin-bottom-4">
-          Add a Google account to manage its API keys. You'll need to have already created Google Cloud projects with Street View API enabled.
-        </p>
-        <div className="govuk-form-group">
-          <label className="govuk-label" htmlFor="gsvEmail">Google Account Email *</label>
-          <input
-            className="govuk-input"
-            id="gsvEmail"
-            type="email"
-            value={newAccountData.email}
-            onChange={(e) => setNewAccountData({ ...newAccountData, email: e.target.value })}
-            placeholder="your-email@gmail.com"
-            required
-          />
-        </div>
-        <div className="govuk-form-group">
-          <label className="govuk-label" htmlFor="gsvBilling">Billing Account ID (optional)</label>
-          <p className="govuk-hint">Format: XXXXXX-XXXXXX-XXXXXX</p>
-          <input
-            className="govuk-input"
-            id="gsvBilling"
-            value={newAccountData.billing_id}
-            onChange={(e) => setNewAccountData({ ...newAccountData, billing_id: e.target.value })}
-            placeholder="XXXXXX-XXXXXX-XXXXXX"
-          />
-        </div>
-        <div className="govuk-form-group">
-          <label className="govuk-label" htmlFor="gsvProjects">Target Projects</label>
-          <input
-            className="govuk-input"
-            id="gsvProjects"
-            type="number"
-            value={newAccountData.target_projects}
-            onChange={(e) => setNewAccountData({ ...newAccountData, target_projects: parseInt(e.target.value) || 30 })}
-            min={1}
-            max={100}
-          />
-        </div>
-        <div className="govuk-button-group">
-          <button className="govuk-button" onClick={handleAddGsvAccount}>
-            Add Account
-          </button>
-          <button
-            className="govuk-button govuk-button--secondary"
-            onClick={() => {
-              setAddAccountModalOpen(false)
-              setNewAccountData({ email: '', billing_id: '', target_projects: 30 })
-            }}
-          >
-            Cancel
-          </button>
-        </div>
-      </Modal>
-
-      {/* Add GSV Keys Modal */}
+      {/* Add GSV Keys Modal - Simplified */}
       <Modal
         isOpen={addKeysModalOpen}
         onClose={() => {
           setAddKeysModalOpen(false)
           setBulkKeysText('')
-          setSelectedGsvAccount(null)
         }}
-        title={`Add API Keys - ${selectedGsvAccount?.email || ''}`}
+        title="Add API Keys"
       >
         <p className="govuk-body govuk-!-margin-bottom-4">
-          Paste your API keys below. You can use comma-separated or one key per line.
+          Paste your Google Street View API keys below. You can use comma-separated or one key per line.
+          Keys should start with "AIza".
         </p>
         <div className="govuk-form-group">
           <label className="govuk-label" htmlFor="bulkKeys">API Keys *</label>
           <textarea
             className="govuk-textarea"
             id="bulkKeys"
-            rows={8}
+            rows={10}
             value={bulkKeysText}
             onChange={(e) => setBulkKeysText(e.target.value)}
-            placeholder="AIzaSyB1234567890abcdefg,
-AIzaSyC1234567890abcdefg,
-AIzaSyD1234567890abcdefg"
+            placeholder="AIzaSyB1234567890abcdefghijklmnopqrst
+AIzaSyC1234567890abcdefghijklmnopqrst
+AIzaSyD1234567890abcdefghijklmnopqrst"
             style={{ fontFamily: 'monospace', fontSize: '12px' }}
           />
           <p className="govuk-hint">
-            {bulkKeysText.split(/[,\n]/).filter(k => k.trim()).length} keys detected
+            {bulkKeysText.split(/[,\n]/).filter(k => k.trim() && k.trim().startsWith('AIza')).length} valid keys detected
           </p>
         </div>
         <div className="govuk-button-group">
@@ -1513,7 +1121,6 @@ AIzaSyD1234567890abcdefg"
             onClick={() => {
               setAddKeysModalOpen(false)
               setBulkKeysText('')
-              setSelectedGsvAccount(null)
             }}
           >
             Cancel

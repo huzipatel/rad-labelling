@@ -43,6 +43,9 @@ class GSVDownloader:
         Returns pano_id and capture date if available.
         Uses key rotation and automatic failover.
         """
+        # Apply randomized delay (jitter) before request
+        await gsv_key_manager.apply_jitter()
+        
         api_key = await self._get_api_key()
         if not api_key:
             return None
@@ -201,6 +204,9 @@ class GSVDownloader:
         pano_id = metadata.get("pano_id")
         
         for heading in HEADINGS:
+            # Apply randomized delay between requests (jitter)
+            await gsv_key_manager.apply_jitter()
+            
             # Get API key for this request
             api_key = await self._get_api_key()
             if not api_key:

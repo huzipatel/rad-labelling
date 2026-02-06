@@ -8,7 +8,7 @@ from app.models.spatial import CouncilBoundary, CombinedAuthority, RoadClassific
 from app.models.shapefile import Shapefile, EnhancementJob, UploadJob
 from app.models.download_log import DownloadLog
 from app.models.notification import NotificationSettings, UserNotificationPreferences, NotificationLog
-from app.models.gsv_account import GSVAccount, GSVProject
+from app.models.gsv_api_key import GSVApiKey
 from app.models.comment import LabelComment
 
 __all__ = [
@@ -30,7 +30,6 @@ __all__ = [
     "NotificationSettings",
     "UserNotificationPreferences",
     "NotificationLog",
-    "GSVAccount",
-    "GSVProject",
+    "GSVApiKey",
 ]
 

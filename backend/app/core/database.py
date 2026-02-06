@@ -113,7 +113,7 @@ async def init_db() -> None:
         CouncilBoundary, CombinedAuthority, RoadClassification,
         Shapefile, EnhancementJob, UploadJob, DownloadLog,
         NotificationSettings, UserNotificationPreferences, NotificationLog,
-        GSVAccount, GSVProject
+        GSVApiKey
     )
     
     # Enable PostGIS extension first (required for geography/geometry types)
@@ -200,53 +200,39 @@ async def init_db() -> None:
     except Exception as e:
         print(f"[Database] Error adding task columns: {e}")
     
-    # Create GSV account tables if they don't exist
-    print("[Database] Creating GSV account tables...")
+    # Create GSV API keys table if it doesn't exist
+    print("[Database] Creating GSV API keys table...")
     try:
         async with engine.begin() as conn:
-            # Check if gsv_accounts table exists
+            # Check if gsv_api_keys table exists
             result = await conn.execute(text(
-                "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'gsv_accounts')"
+                "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'gsv_api_keys')"
             ))
             if not result.scalar():
-                print("[Database] Creating gsv_accounts table...")
+                print("[Database] Creating gsv_api_keys table...")
                 await conn.execute(text("""
-                    CREATE TABLE gsv_accounts (
+                    CREATE TABLE gsv_api_keys (
                         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                        email VARCHAR(255) UNIQUE NOT NULL,
-                        billing_id VARCHAR(100),
-                        target_projects INTEGER DEFAULT 30,
-                        access_token TEXT,
-                        refresh_token TEXT,
-                        connected BOOLEAN DEFAULT FALSE,
-                        connected_at TIMESTAMP,
-                        created_at TIMESTAMP DEFAULT NOW(),
-                        updated_at TIMESTAMP DEFAULT NOW()
+                        api_key VARCHAR(100) UNIQUE NOT NULL,
+                        label VARCHAR(255),
+                        is_active BOOLEAN DEFAULT TRUE NOT NULL,
+                        requests_today INTEGER DEFAULT 0 NOT NULL,
+                        requests_total BIGINT DEFAULT 0 NOT NULL,
+                        last_used_at TIMESTAMP WITH TIME ZONE,
+                        last_reset_date DATE,
+                        consecutive_errors INTEGER DEFAULT 0 NOT NULL,
+                        last_error_at TIMESTAMP WITH TIME ZONE,
+                        last_error_message VARCHAR(500),
+                        quota_exhausted BOOLEAN DEFAULT FALSE NOT NULL,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
                     )
                 """))
-            
-            # Check if gsv_projects table exists
-            result = await conn.execute(text(
-                "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'gsv_projects')"
-            ))
-            if not result.scalar():
-                print("[Database] Creating gsv_projects table...")
-                await conn.execute(text("""
-                    CREATE TABLE gsv_projects (
-                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                        account_id UUID NOT NULL REFERENCES gsv_accounts(id) ON DELETE CASCADE,
-                        project_id VARCHAR(100) NOT NULL,
-                        project_name VARCHAR(255),
-                        api_key TEXT,
-                        auto_created BOOLEAN DEFAULT FALSE,
-                        created_at TIMESTAMP DEFAULT NOW()
-                    )
-                """))
-                await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_gsv_projects_account_id ON gsv_projects(account_id)"))
+                await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_gsv_api_keys_active ON gsv_api_keys(is_active, quota_exhausted)"))
         
-        print("[Database] GSV tables created/verified")
+        print("[Database] GSV API keys table created/verified")
     except Exception as e:
-        print(f"[Database] Error creating GSV tables: {e}")
+        print(f"[Database] Error creating GSV API keys table: {e}")
     
     print("[Database] Schema migration completed")
 

@@ -47,29 +47,11 @@ class Settings(BaseSettings):
         return "http://localhost:8000/api/v1/admin/gsv-oauth-callback"
     
     # Google Street View API
-    # Single key (backwards compatible)
-    GSV_API_KEY: str = ""
-    # Multiple keys for rotation (comma-separated, e.g., "key1,key2,key3")
-    GSV_API_KEYS: str = ""
-    # Rate limiting settings - Google allows 30,000/min per key
-    GSV_REQUESTS_PER_MINUTE: int = 5000  # Per key limit (conservative vs Google's 30k)
-    GSV_DAILY_LIMIT_PER_KEY: int = 25000  # Google's daily limit for unsigned requests
-    GSV_MIN_DELAY_MS: int = 10  # Minimum delay between requests in milliseconds
-    
-    @property
-    def gsv_api_keys_list(self) -> List[str]:
-        """Get list of all GSV API keys (combines single key and multiple keys)."""
-        keys = []
-        # Add single key if set
-        if self.GSV_API_KEY:
-            keys.append(self.GSV_API_KEY)
-        # Add multiple keys if set
-        if self.GSV_API_KEYS:
-            for key in self.GSV_API_KEYS.split(","):
-                key = key.strip()
-                if key and key not in keys:
-                    keys.append(key)
-        return keys
+    # NOTE: API keys are now managed through the Admin UI and stored in the database.
+    # These environment variables are DEPRECATED and no longer used.
+    # Use Admin Panel -> GSV API Keys to add/manage keys instead.
+    GSV_API_KEY: str = ""  # DEPRECATED - use database
+    GSV_API_KEYS: str = ""  # DEPRECATED - use database
     
     # Google Cloud Storage
     GCS_BUCKET_NAME: str = "labelling-images"
