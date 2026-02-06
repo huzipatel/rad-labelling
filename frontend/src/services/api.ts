@@ -366,10 +366,14 @@ export const notificationsApi = {
     api.patch('/notifications/preferences', data),
   getLogs: (limit?: number, notificationType?: string) =>
     api.get('/notifications/logs', { params: { limit, notification_type: notificationType } }),
-  testDailySummary: () =>
-    api.post('/notifications/test/daily-summary'),
+  testDailySummary: (direct: boolean = true) =>
+    api.post('/notifications/test/daily-summary', null, { params: { direct } }),
   testLabellerReminders: () =>
     api.post('/notifications/test/labeller-reminders'),
+  getDiagnostic: () =>
+    api.get('/notifications/diagnostic'),
+  testDirect: (phoneNumber: string, message?: string) =>
+    api.post('/notifications/test/direct', { phone_number: phoneNumber, message }),
 }
 
 // Data Management API

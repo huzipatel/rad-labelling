@@ -65,6 +65,9 @@ export default function NotificationsPage() {
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
   const [unreadComments, setUnreadComments] = useState<UnreadComment[]>([])
+  const [diagnostic, setDiagnostic] = useState<any>(null)
+  const [directTestNumber, setDirectTestNumber] = useState('')
+  const [sendingDirect, setSendingDirect] = useState(false)
 
   useEffect(() => {
     loadData()
@@ -143,11 +146,28 @@ export default function NotificationsPage() {
   const handleTestDailySummary = async () => {
     setTesting(true)
     try {
-      await notificationsApi.testDailySummary()
-      alert('Daily summary notification sent!')
-      loadData()
+      const response = await notificationsApi.testDailySummary(true) // direct=true to bypass Celery
+      const data = response.data
+      
+      if (data.error) {
+        // Show detailed error with hints
+        let errorMsg = data.message
+        if (data.hint) {
+          errorMsg += '\n\nHint: ' + data.hint
+        }
+        alert(errorMsg)
+      } else {
+        // Success
+        let successMsg = data.message
+        if (data.stats) {
+          successMsg += `\n\nStats sent:\n- Labels today: ${data.stats.total_labels}\n- Active labellers: ${data.stats.labellers}\n- Tasks completed: ${data.stats.tasks_completed}`
+        }
+        alert(successMsg)
+        loadData()
+      }
     } catch (error: any) {
-      alert(error.response?.data?.detail || 'Failed to send test notification')
+      const detail = error.response?.data?.detail || error.response?.data?.message || 'Failed to send test notification'
+      alert(detail)
     } finally {
       setTesting(false)
     }
@@ -163,6 +183,48 @@ export default function NotificationsPage() {
       alert(error.response?.data?.detail || 'Failed to send test notifications')
     } finally {
       setTesting(false)
+    }
+  }
+
+  const loadDiagnostic = async () => {
+    try {
+      const response = await notificationsApi.getDiagnostic()
+      setDiagnostic(response.data)
+    } catch (error) {
+      console.error('Failed to load diagnostic:', error)
+    }
+  }
+
+  const handleDirectTest = async () => {
+    if (!directTestNumber.trim()) {
+      alert('Please enter a phone number')
+      return
+    }
+    setSendingDirect(true)
+    try {
+      const response = await notificationsApi.testDirect(directTestNumber.trim())
+      const data = response.data
+      
+      if (data.success) {
+        alert(data.message + (data.note ? '\n\n' + data.note : ''))
+      } else {
+        let errorMsg = data.error
+        if (data.common_causes) {
+          errorMsg += '\n\nCommon causes:\n' + data.common_causes.map((c: string) => '• ' + c).join('\n')
+        }
+        if (data.sandbox_join_instructions) {
+          errorMsg += '\n\nTo join the Twilio sandbox:\n'
+          errorMsg += `1. ${data.sandbox_join_instructions.step1}\n`
+          errorMsg += `2. ${data.sandbox_join_instructions.step2}\n`
+          errorMsg += `3. ${data.sandbox_join_instructions.step3}\n`
+          errorMsg += `4. ${data.sandbox_join_instructions.step4}`
+        }
+        alert(errorMsg)
+      }
+    } catch (error: any) {
+      alert(error.response?.data?.detail || 'Failed to send direct test')
+    } finally {
+      setSendingDirect(false)
     }
   }
 
@@ -541,6 +603,129 @@ export default function NotificationsPage() {
                 <p className="govuk-hint govuk-!-margin-top-2">
                   Labellers can opt out via WhatsApp by replying STOP.
                 </p>
+              </div>
+
+              {/* Troubleshooting Section */}
+              <div style={{ 
+                background: '#fff3cd', 
+                borderRadius: '8px', 
+                padding: '24px',
+                marginBottom: '24px',
+                border: '1px solid #ffc107'
+              }}>
+                <h3 className="govuk-heading-m govuk-!-margin-bottom-4">
+                  🔧 Troubleshooting
+                </h3>
+                
+                <p className="govuk-body">
+                  Having issues with WhatsApp notifications? Use these tools to diagnose and test.
+                </p>
+
+                {/* Direct Test */}
+                <div className="govuk-form-group">
+                  <label className="govuk-label" htmlFor="direct-test-number">
+                    Test direct message to any number
+                  </label>
+                  <div className="govuk-hint">
+                    Enter a phone number in E.164 format (e.g., +447123456789). 
+                    The recipient must have joined the Twilio sandbox first.
+                  </div>
+                  <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
+                    <input
+                      className="govuk-input govuk-input--width-20"
+                      id="direct-test-number"
+                      type="tel"
+                      value={directTestNumber}
+                      onChange={(e) => setDirectTestNumber(e.target.value)}
+                      placeholder="+447123456789"
+                    />
+                    <button
+                      className="govuk-button govuk-button--secondary"
+                      onClick={handleDirectTest}
+                      disabled={sendingDirect || !directTestNumber.trim()}
+                    >
+                      {sendingDirect ? 'Sending...' : 'Send Test'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Diagnostic Button */}
+                <button
+                  className="govuk-button govuk-button--secondary"
+                  onClick={loadDiagnostic}
+                  style={{ marginRight: '10px' }}
+                >
+                  Run Diagnostic
+                </button>
+
+                {diagnostic && (
+                  <div style={{ marginTop: '16px', padding: '16px', background: '#fff', borderRadius: '4px' }}>
+                    <h4 className="govuk-heading-s">Diagnostic Results</h4>
+                    
+                    {/* Status */}
+                    <p className="govuk-body">
+                      <strong>Ready to send:</strong>{' '}
+                      <span style={{ color: diagnostic.ready_to_send ? '#00703c' : '#d4351c' }}>
+                        {diagnostic.ready_to_send ? '✓ Yes' : '✗ No'}
+                      </span>
+                    </p>
+
+                    {/* Issues */}
+                    {diagnostic.issues?.length > 0 && (
+                      <div style={{ marginBottom: '12px' }}>
+                        <strong style={{ color: '#d4351c' }}>Issues:</strong>
+                        <ul className="govuk-list govuk-list--bullet">
+                          {diagnostic.issues.map((issue: string, i: number) => (
+                            <li key={i} style={{ color: '#d4351c' }}>{issue}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {/* Warnings */}
+                    {diagnostic.warnings?.length > 0 && (
+                      <div style={{ marginBottom: '12px' }}>
+                        <strong style={{ color: '#856404' }}>Warnings:</strong>
+                        <ul className="govuk-list govuk-list--bullet">
+                          {diagnostic.warnings.map((warning: string, i: number) => (
+                            <li key={i} style={{ color: '#856404' }}>{warning}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {/* Twilio Status */}
+                    <details className="govuk-details" style={{ marginBottom: '12px' }}>
+                      <summary className="govuk-details__summary">
+                        <span className="govuk-details__summary-text">Twilio Configuration</span>
+                      </summary>
+                      <div className="govuk-details__text">
+                        <ul className="govuk-list govuk-list--bullet">
+                          <li>Account SID: {diagnostic.twilio?.account_sid_set ? '✓ Set' : '✗ Not set'}</li>
+                          <li>Auth Token: {diagnostic.twilio?.auth_token_set ? '✓ Set' : '✗ Not set'}</li>
+                          <li>WhatsApp Number: {diagnostic.twilio?.whatsapp_number || '✗ Not set'}</li>
+                          <li>Service Enabled: {diagnostic.twilio?.service_enabled ? '✓ Yes' : '✗ No'}</li>
+                        </ul>
+                      </div>
+                    </details>
+
+                    {/* Sandbox Info */}
+                    <details className="govuk-details">
+                      <summary className="govuk-details__summary">
+                        <span className="govuk-details__summary-text">How to join Twilio Sandbox</span>
+                      </summary>
+                      <div className="govuk-details__text">
+                        <ol className="govuk-list govuk-list--number">
+                          <li>Save the sandbox number <strong>{diagnostic.sandbox_info?.sandbox_number}</strong> to your phone</li>
+                          <li>Open WhatsApp and message that number</li>
+                          <li>Send "join &lt;your-sandbox-code&gt;" (check Twilio console for code)</li>
+                          <li>Wait for confirmation message</li>
+                          <li>Then try sending notifications again</li>
+                        </ol>
+                      </div>
+                    </details>
+                  </div>
+                )}
               </div>
             </div>
           </div>
