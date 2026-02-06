@@ -98,29 +98,52 @@ async def get_task_locations(
     if current_user.role == "labeller" and task.assigned_to != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
     
-    # Build query based on task's group_field
+    # Build query based on task type
     offset = (page - 1) * page_size
-    base_query = select(Location).where(Location.location_type_id == task.location_type_id)
     
-    # Filter by the task's grouping
-    if task.group_field and task.group_field.startswith("original_"):
-        # Filter by original_data JSONB field
-        original_key = task.group_field.replace("original_", "")
-        from sqlalchemy import text
-        base_query = base_query.where(
-            text(f"original_data->>'{original_key}' = :group_value")
-        ).params(group_value=task.group_value)
-    elif task.group_field == "council" or not task.group_field:
-        base_query = base_query.where(Location.council == (task.group_value or task.council))
-    elif task.group_field == "combined_authority":
-        base_query = base_query.where(Location.combined_authority == task.group_value)
-    elif task.group_field == "road_classification":
-        base_query = base_query.where(Location.road_classification == task.group_value)
-    
-    locations_result = await db.execute(
-        base_query.offset(offset).limit(page_size).order_by(Location.identifier)
-    )
-    locations = locations_result.scalars().all()
+    # Handle sample tasks - they have specific location IDs
+    if task.is_sample and task.sample_location_ids:
+        # Sample task: only return the specific sampled locations
+        sample_uuids = [uuid.UUID(lid) for lid in task.sample_location_ids]
+        # Paginate within the sample
+        paginated_ids = sample_uuids[offset:offset + page_size]
+        
+        if paginated_ids:
+            locations_result = await db.execute(
+                select(Location).where(Location.id.in_(paginated_ids))
+            )
+            locations = locations_result.scalars().all()
+            # Sort by the order in sample_location_ids
+            id_order = {str(lid): i for i, lid in enumerate(paginated_ids)}
+            locations = sorted(locations, key=lambda loc: id_order.get(str(loc.id), 999999))
+        else:
+            locations = []
+        
+        total_locations = len(task.sample_location_ids)
+    else:
+        # Regular task: use group field filtering
+        base_query = select(Location).where(Location.location_type_id == task.location_type_id)
+        
+        # Filter by the task's grouping
+        if task.group_field and task.group_field.startswith("original_"):
+            # Filter by original_data JSONB field
+            original_key = task.group_field.replace("original_", "")
+            from sqlalchemy import text
+            base_query = base_query.where(
+                text(f"original_data->>'{original_key}' = :group_value")
+            ).params(group_value=task.group_value)
+        elif task.group_field == "council" or not task.group_field:
+            base_query = base_query.where(Location.council == (task.group_value or task.council))
+        elif task.group_field == "combined_authority":
+            base_query = base_query.where(Location.combined_authority == task.group_value)
+        elif task.group_field == "road_classification":
+            base_query = base_query.where(Location.road_classification == task.group_value)
+        
+        locations_result = await db.execute(
+            base_query.offset(offset).limit(page_size).order_by(Location.identifier)
+        )
+        locations = locations_result.scalars().all()
+        total_locations = task.total_locations
     
     # Get labels for these locations
     location_ids = [loc.id for loc in locations]
@@ -151,7 +174,7 @@ async def get_task_locations(
         ],
         "page": page,
         "page_size": page_size,
-        "total": task.total_locations
+        "total": total_locations
     }
 
 
@@ -461,8 +484,37 @@ async def search_location(
     if current_user.role == "labeller" and task.assigned_to != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
     
-    # Build base query with task grouping
     from sqlalchemy import text
+    
+    # Handle sample tasks - they have specific location IDs
+    if task.is_sample and task.sample_location_ids:
+        # Sample task: only search within the specific sampled locations
+        sample_uuids = [uuid.UUID(lid) for lid in task.sample_location_ids]
+        search_result = await db.execute(
+            select(Location)
+            .where(Location.id.in_(sample_uuids))
+            .where(Location.identifier.ilike(f"%{query}%"))
+            .limit(20)
+        )
+        locations = search_result.scalars().all()
+        
+        # Get indices for found locations (index within sample_location_ids)
+        results = []
+        for loc in locations:
+            try:
+                index = task.sample_location_ids.index(str(loc.id))
+            except ValueError:
+                index = -1  # Should not happen
+            
+            results.append({
+                "id": str(loc.id),
+                "identifier": loc.identifier,
+                "index": index
+            })
+        
+        return {"results": results}
+    
+    # Regular task: Build base query with task grouping
     base_query = select(Location).where(Location.location_type_id == task.location_type_id)
     
     if task.group_field and task.group_field.startswith("original_"):

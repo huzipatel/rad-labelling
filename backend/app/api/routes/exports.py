@@ -273,24 +273,33 @@ async def export_task_csv(
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     
-    # Build query to get locations for this task
-    base_query = select(Location).where(Location.location_type_id == task.location_type_id)
-    
-    if task.group_field and task.group_field.startswith("original_"):
-        original_key = task.group_field.replace("original_", "")
-        base_query = base_query.where(
-            text(f"original_data->>'{original_key}' = :group_value")
-        ).params(group_value=task.group_value)
-    elif task.group_field == "council" or not task.group_field:
-        base_query = base_query.where(Location.council == (task.group_value or task.council))
-    elif task.group_field == "combined_authority":
-        base_query = base_query.where(Location.combined_authority == task.group_value)
-    elif task.group_field == "road_classification":
-        base_query = base_query.where(Location.road_classification == task.group_value)
-    
-    # Get all locations
-    locations_result = await db.execute(base_query.order_by(Location.identifier))
-    locations = locations_result.scalars().all()
+    # Handle sample tasks - they have specific location IDs
+    if task.is_sample and task.sample_location_ids:
+        # Sample task: only export the specific sampled locations
+        sample_uuids = [uuid.UUID(lid) for lid in task.sample_location_ids]
+        locations_result = await db.execute(
+            select(Location).where(Location.id.in_(sample_uuids))
+        )
+        locations = locations_result.scalars().all()
+    else:
+        # Regular task: use group field filtering
+        base_query = select(Location).where(Location.location_type_id == task.location_type_id)
+        
+        if task.group_field and task.group_field.startswith("original_"):
+            original_key = task.group_field.replace("original_", "")
+            base_query = base_query.where(
+                text(f"original_data->>'{original_key}' = :group_value")
+            ).params(group_value=task.group_value)
+        elif task.group_field == "council" or not task.group_field:
+            base_query = base_query.where(Location.council == (task.group_value or task.council))
+        elif task.group_field == "combined_authority":
+            base_query = base_query.where(Location.combined_authority == task.group_value)
+        elif task.group_field == "road_classification":
+            base_query = base_query.where(Location.road_classification == task.group_value)
+        
+        # Get all locations
+        locations_result = await db.execute(base_query.order_by(Location.identifier))
+        locations = locations_result.scalars().all()
     
     # Get all labels for this task
     labels_result = await db.execute(
@@ -397,20 +406,30 @@ async def get_task_snapshots(
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     
-    # Build query to get locations for this task
-    base_query = select(Location).where(Location.location_type_id == task.location_type_id)
+    # Handle sample tasks - they have specific location IDs
+    if task.is_sample and task.sample_location_ids:
+        # Sample task: only get the specific sampled locations
+        sample_uuids = [uuid.UUID(lid) for lid in task.sample_location_ids]
+        locations_result = await db.execute(
+            select(Location).where(Location.id.in_(sample_uuids))
+        )
+        locations = locations_result.scalars().all()
+    else:
+        # Build query to get locations for this task
+        base_query = select(Location).where(Location.location_type_id == task.location_type_id)
+        
+        if task.group_field and task.group_field.startswith("original_"):
+            original_key = task.group_field.replace("original_", "")
+            base_query = base_query.where(
+                text(f"original_data->>'{original_key}' = :group_value")
+            ).params(group_value=task.group_value)
+        elif task.group_field == "council" or not task.group_field:
+            base_query = base_query.where(Location.council == (task.group_value or task.council))
+        
+        # Get all locations
+        locations_result = await db.execute(base_query)
+        locations = locations_result.scalars().all()
     
-    if task.group_field and task.group_field.startswith("original_"):
-        original_key = task.group_field.replace("original_", "")
-        base_query = base_query.where(
-            text(f"original_data->>'{original_key}' = :group_value")
-        ).params(group_value=task.group_value)
-    elif task.group_field == "council" or not task.group_field:
-        base_query = base_query.where(Location.council == (task.group_value or task.council))
-    
-    # Get all locations
-    locations_result = await db.execute(base_query)
-    locations = locations_result.scalars().all()
     location_ids = [loc.id for loc in locations]
     locations_by_id = {str(loc.id): loc for loc in locations}
     
@@ -491,7 +510,7 @@ async def bulk_export_csv(
                 logger.warning(f"Task not found: {task_id}")
                 continue
             
-            logger.info(f"Processing task: {task.name or task.group_value or task.council}, group_field={task.group_field}, group_value={task.group_value}")
+            logger.info(f"Processing task: {task.name or task.group_value or task.council}, group_field={task.group_field}, group_value={task.group_value}, is_sample={task.is_sample}")
             
             # Get location type
             type_result = await db.execute(
@@ -499,38 +518,48 @@ async def bulk_export_csv(
             )
             location_type = type_result.scalar_one_or_none()
             
-            # Build query for this task's locations - use same logic as single task export
+            # Handle sample tasks - they have specific location IDs
             from sqlalchemy import text
             
-            base_query = select(Location).where(Location.location_type_id == task.location_type_id)
-            
-            # Apply group filter using same logic as export_task_csv
-            if task.group_field and task.group_field.startswith("original_"):
-                original_key = task.group_field.replace("original_", "")
-                base_query = base_query.where(
-                    text(f"original_data->>'{original_key}' = :group_value")
-                ).params(group_value=task.group_value)
-                logger.info(f"Filtering by original_data->>'{original_key}' = {task.group_value}")
-            elif task.group_field == "council" or not task.group_field:
-                filter_value = task.group_value or task.council
-                if filter_value:
-                    base_query = base_query.where(Location.council == filter_value)
-                    logger.info(f"Filtering by council = {filter_value}")
-            elif task.group_field == "combined_authority":
-                base_query = base_query.where(Location.combined_authority == task.group_value)
-                logger.info(f"Filtering by combined_authority = {task.group_value}")
-            elif task.group_field == "road_classification":
-                base_query = base_query.where(Location.road_classification == task.group_value)
-                logger.info(f"Filtering by road_classification = {task.group_value}")
-            elif task.group_field and task.group_value:
-                # Fallback: try to match against original_data
-                base_query = base_query.where(
-                    text(f"original_data->>'{task.group_field}' = :group_value")
-                ).params(group_value=task.group_value)
-                logger.info(f"Filtering by original_data->>'{task.group_field}' = {task.group_value}")
-            
-            locations_result = await db.execute(base_query.order_by(Location.identifier))
-            locations = locations_result.scalars().all()
+            if task.is_sample and task.sample_location_ids:
+                # Sample task: only export the specific sampled locations
+                sample_uuids = [uuid.UUID(lid) for lid in task.sample_location_ids]
+                locations_result = await db.execute(
+                    select(Location).where(Location.id.in_(sample_uuids))
+                )
+                locations = locations_result.scalars().all()
+                logger.info(f"Sample task: found {len(locations)} of {len(task.sample_location_ids)} sampled locations")
+            else:
+                # Regular task: Build query for this task's locations
+                base_query = select(Location).where(Location.location_type_id == task.location_type_id)
+                
+                # Apply group filter using same logic as export_task_csv
+                if task.group_field and task.group_field.startswith("original_"):
+                    original_key = task.group_field.replace("original_", "")
+                    base_query = base_query.where(
+                        text(f"original_data->>'{original_key}' = :group_value")
+                    ).params(group_value=task.group_value)
+                    logger.info(f"Filtering by original_data->>'{original_key}' = {task.group_value}")
+                elif task.group_field == "council" or not task.group_field:
+                    filter_value = task.group_value or task.council
+                    if filter_value:
+                        base_query = base_query.where(Location.council == filter_value)
+                        logger.info(f"Filtering by council = {filter_value}")
+                elif task.group_field == "combined_authority":
+                    base_query = base_query.where(Location.combined_authority == task.group_value)
+                    logger.info(f"Filtering by combined_authority = {task.group_value}")
+                elif task.group_field == "road_classification":
+                    base_query = base_query.where(Location.road_classification == task.group_value)
+                    logger.info(f"Filtering by road_classification = {task.group_value}")
+                elif task.group_field and task.group_value:
+                    # Fallback: try to match against original_data
+                    base_query = base_query.where(
+                        text(f"original_data->>'{task.group_field}' = :group_value")
+                    ).params(group_value=task.group_value)
+                    logger.info(f"Filtering by original_data->>'{task.group_field}' = {task.group_value}")
+                
+                locations_result = await db.execute(base_query.order_by(Location.identifier))
+                locations = locations_result.scalars().all()
             
             logger.info(f"Found {len(locations)} locations for task {task_id}")
             
@@ -680,33 +709,42 @@ async def bulk_export_all(
             task_name = task.name or task.group_value or task.council or str(task.id)[:8]
             safe_task_name = "".join(c if c.isalnum() or c in (' ', '-', '_') else '_' for c in task_name)
             
-            # Build query for this task's locations - use same logic as single task export
+            # Handle sample tasks - they have specific location IDs
             from sqlalchemy import text
             
-            base_query = select(Location).where(Location.location_type_id == task.location_type_id)
-            
-            # Apply group filter using same logic as export_task_csv
-            if task.group_field and task.group_field.startswith("original_"):
-                original_key = task.group_field.replace("original_", "")
-                base_query = base_query.where(
-                    text(f"original_data->>'{original_key}' = :group_value")
-                ).params(group_value=task.group_value)
-            elif task.group_field == "council" or not task.group_field:
-                filter_value = task.group_value or task.council
-                if filter_value:
-                    base_query = base_query.where(Location.council == filter_value)
-            elif task.group_field == "combined_authority":
-                base_query = base_query.where(Location.combined_authority == task.group_value)
-            elif task.group_field == "road_classification":
-                base_query = base_query.where(Location.road_classification == task.group_value)
-            elif task.group_field and task.group_value:
-                # Fallback: try to match against original_data
-                base_query = base_query.where(
-                    text(f"original_data->>'{task.group_field}' = :group_value")
-                ).params(group_value=task.group_value)
-            
-            locations_result = await db.execute(base_query.order_by(Location.identifier))
-            locations = locations_result.scalars().all()
+            if task.is_sample and task.sample_location_ids:
+                # Sample task: only export the specific sampled locations
+                sample_uuids = [uuid.UUID(lid) for lid in task.sample_location_ids]
+                locations_result = await db.execute(
+                    select(Location).where(Location.id.in_(sample_uuids))
+                )
+                locations = locations_result.scalars().all()
+            else:
+                # Regular task: Build query for this task's locations
+                base_query = select(Location).where(Location.location_type_id == task.location_type_id)
+                
+                # Apply group filter using same logic as export_task_csv
+                if task.group_field and task.group_field.startswith("original_"):
+                    original_key = task.group_field.replace("original_", "")
+                    base_query = base_query.where(
+                        text(f"original_data->>'{original_key}' = :group_value")
+                    ).params(group_value=task.group_value)
+                elif task.group_field == "council" or not task.group_field:
+                    filter_value = task.group_value or task.council
+                    if filter_value:
+                        base_query = base_query.where(Location.council == filter_value)
+                elif task.group_field == "combined_authority":
+                    base_query = base_query.where(Location.combined_authority == task.group_value)
+                elif task.group_field == "road_classification":
+                    base_query = base_query.where(Location.road_classification == task.group_value)
+                elif task.group_field and task.group_value:
+                    # Fallback: try to match against original_data
+                    base_query = base_query.where(
+                        text(f"original_data->>'{task.group_field}' = :group_value")
+                    ).params(group_value=task.group_value)
+                
+                locations_result = await db.execute(base_query.order_by(Location.identifier))
+                locations = locations_result.scalars().all()
             
             if not locations:
                 continue
