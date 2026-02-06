@@ -217,125 +217,155 @@ async def test_daily_summary(
             return {"message": f"Failed to queue task (Celery may not be running): {str(e)}", "error": True}
     
     # Direct send - bypass Celery for immediate testing
-    from app.services.whatsapp_service import whatsapp_service
-    from sqlalchemy import func
-    
-    # Get notification settings
-    result = await db.execute(select(NotificationSettings).limit(1))
-    settings_obj = result.scalar_one_or_none()
-    
-    if not settings_obj:
-        return {"message": "No notification settings found. Please configure settings first.", "error": True}
-    
-    if not settings_obj.daily_summary_enabled:
-        return {"message": "Daily summary is disabled. Enable it in settings first.", "error": True}
-    
-    if not settings_obj.daily_summary_admin_id:
-        return {"message": "No admin selected for daily summary. Select an admin in settings.", "error": True}
-    
-    # Get admin user
-    admin_result = await db.execute(
-        select(User).where(User.id == settings_obj.daily_summary_admin_id)
-    )
-    admin = admin_result.scalar_one_or_none()
-    
-    if not admin:
-        return {"message": "Selected admin user not found.", "error": True}
-    
-    if not admin.whatsapp_number:
-        return {"message": f"Admin '{admin.name}' does not have a WhatsApp number configured.", "error": True}
-    
-    # Check if WhatsApp service is enabled
-    if not whatsapp_service.enabled:
-        return {
-            "message": "WhatsApp service not enabled. Check Twilio credentials (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_NUMBER).",
-            "error": True
-        }
-    
-    # Calculate today's stats
-    from datetime import datetime
-    from sqlalchemy import func
-    from app.models.label import Label
-    from app.models.task import Task
-    
-    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-    
-    # Get total labels today
-    labels_result = await db.execute(
-        select(func.count(Label.id)).where(Label.created_at >= today_start)
-    )
-    total_labels = labels_result.scalar() or 0
-    
-    # Get labeller stats
-    labeller_stats_result = await db.execute(
-        select(
-            User.name,
-            func.count(Label.id).label('labels')
-        ).join(
-            Label, Label.labeller_id == User.id
-        ).where(
-            Label.created_at >= today_start
-        ).group_by(
-            User.id, User.name
-        ).order_by(
-            func.count(Label.id).desc()
-        )
-    )
-    labeller_stats = [
-        {"name": row.name, "labels": row.labels}
-        for row in labeller_stats_result.all()
-    ]
-    
-    # Get tasks completed today
-    tasks_result = await db.execute(
-        select(Task.name).where(
-            Task.status == "completed",
-            Task.updated_at >= today_start
-        )
-    )
-    tasks_completed = [row[0] for row in tasks_result.all() if row[0]]
-    
-    # Send notification directly
     try:
-        success = whatsapp_service.send_daily_performance_summary(
-            to_number=admin.whatsapp_number,
-            total_labels_today=total_labels,
-            total_images_today=total_labels,  # Approximation
-            labeller_stats=labeller_stats,
-            tasks_completed=tasks_completed
-        )
+        from app.services.whatsapp_service import whatsapp_service
+        from sqlalchemy import func
+        from datetime import datetime
+        from app.models.label import Label
+        from app.models.task import Task
         
-        if success:
-            # Log the notification
-            from app.models.notification import NotificationLog
-            log = NotificationLog(
-                notification_type="daily_summary",
-                recipient_id=admin.id,
-                recipient_number=admin.whatsapp_number,
-                message_preview=f"Test daily summary: {total_labels} labels",
-                status="sent"
+        # Get notification settings
+        try:
+            result = await db.execute(select(NotificationSettings).limit(1))
+            settings_obj = result.scalar_one_or_none()
+        except Exception as e:
+            return {"message": f"Database error fetching notification settings: {str(e)}", "error": True}
+        
+        if not settings_obj:
+            return {"message": "No notification settings found. Please configure settings first.", "error": True}
+        
+        if not settings_obj.daily_summary_enabled:
+            return {"message": "Daily summary is disabled. Enable it in settings first.", "error": True}
+        
+        if not settings_obj.daily_summary_admin_id:
+            return {"message": "No admin selected for daily summary. Select an admin in settings.", "error": True}
+        
+        # Get admin user
+        try:
+            admin_result = await db.execute(
+                select(User).where(User.id == settings_obj.daily_summary_admin_id)
             )
-            db.add(log)
-            await db.commit()
-            
+            admin = admin_result.scalar_one_or_none()
+        except Exception as e:
+            return {"message": f"Database error fetching admin user: {str(e)}", "error": True}
+        
+        if not admin:
+            return {"message": "Selected admin user not found.", "error": True}
+        
+        if not admin.whatsapp_number:
+            return {"message": f"Admin '{admin.name}' does not have a WhatsApp number configured.", "error": True}
+        
+        # Check if WhatsApp service is enabled
+        if not whatsapp_service.enabled:
             return {
-                "message": f"WhatsApp message sent successfully to {admin.whatsapp_number}",
-                "recipient": admin.name,
-                "stats": {
-                    "total_labels": total_labels,
-                    "labellers": len(labeller_stats),
-                    "tasks_completed": len(tasks_completed)
-                }
+                "message": "WhatsApp service not enabled. Check Twilio credentials (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_NUMBER).",
+                "error": True
             }
-        else:
+        
+        # Calculate today's stats
+        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        
+        # Get total labels today (with error handling)
+        try:
+            labels_result = await db.execute(
+                select(func.count(Label.id)).where(Label.created_at >= today_start)
+            )
+            total_labels = labels_result.scalar() or 0
+        except Exception as e:
+            print(f"[Notifications] Error counting labels: {e}")
+            total_labels = 0
+        
+        # Get labeller stats (with error handling)
+        labeller_stats = []
+        try:
+            labeller_stats_result = await db.execute(
+                select(
+                    User.name,
+                    func.count(Label.id).label('labels')
+                ).join(
+                    Label, Label.labeller_id == User.id
+                ).where(
+                    Label.created_at >= today_start
+                ).group_by(
+                    User.id, User.name
+                ).order_by(
+                    func.count(Label.id).desc()
+                )
+            )
+            labeller_stats = [
+                {"name": row.name, "labels": row.labels}
+                for row in labeller_stats_result.all()
+            ]
+        except Exception as e:
+            print(f"[Notifications] Error getting labeller stats: {e}")
+            labeller_stats = []
+        
+        # Get tasks completed today (with error handling)
+        tasks_completed = []
+        try:
+            tasks_result = await db.execute(
+                select(Task.name).where(
+                    Task.status == "completed",
+                    Task.updated_at >= today_start
+                )
+            )
+            tasks_completed = [row[0] for row in tasks_result.all() if row[0]]
+        except Exception as e:
+            print(f"[Notifications] Error getting completed tasks: {e}")
+            tasks_completed = []
+        
+        # Send notification directly
+        try:
+            success = whatsapp_service.send_daily_performance_summary(
+                to_number=admin.whatsapp_number,
+                total_labels_today=total_labels,
+                total_images_today=total_labels,  # Approximation
+                labeller_stats=labeller_stats,
+                tasks_completed=tasks_completed
+            )
+            
+            if success:
+                # Log the notification
+                try:
+                    from app.models.notification import NotificationLog
+                    log = NotificationLog(
+                        notification_type="daily_summary",
+                        recipient_id=admin.id,
+                        recipient_number=admin.whatsapp_number,
+                        message_preview=f"Test daily summary: {total_labels} labels",
+                        status="sent"
+                    )
+                    db.add(log)
+                    await db.commit()
+                except Exception as log_error:
+                    print(f"[Notifications] Error logging notification: {log_error}")
+                    # Don't fail the whole request just because logging failed
+                
+                return {
+                    "message": f"WhatsApp message sent successfully to {admin.whatsapp_number}",
+                    "recipient": admin.name,
+                    "stats": {
+                        "total_labels": total_labels,
+                        "labellers": len(labeller_stats),
+                        "tasks_completed": len(tasks_completed)
+                    }
+                }
+            else:
+                return {
+                    "message": f"Failed to send WhatsApp message to {admin.whatsapp_number}. Check Render logs for details.",
+                    "error": True,
+                    "hint": "Common issues: (1) Recipient hasn't joined Twilio sandbox, (2) Invalid phone number format, (3) Twilio credentials expired"
+                }
+        except Exception as e:
             return {
-                "message": f"Failed to send WhatsApp message to {admin.whatsapp_number}. Check Render logs for details.",
-                "error": True,
-                "hint": "Common issues: (1) Recipient hasn't joined Twilio sandbox, (2) Invalid phone number format, (3) Twilio credentials expired"
+                "message": f"Error sending WhatsApp message: {str(e)}",
+                "error": True
             }
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return {
-            "message": f"Error sending WhatsApp message: {str(e)}",
+            "message": f"Unexpected error in test_daily_summary: {str(e)}",
             "error": True
         }
 
