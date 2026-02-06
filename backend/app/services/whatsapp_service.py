@@ -131,10 +131,38 @@ class WhatsAppService:
 
 📋 Task: *{task_name}*
 👤 Completed by: *{labeller_name}*
-🖼️ Total Images: *{total_images:,}*
+🖼️ Total Locations: *{total_images:,}*
 ⏰ Time: {completion_time}
 
 Great work! 🌟"""
+        
+        return self.send_message(to_number, message)
+    
+    def send_all_tasks_completed_notification(
+        self,
+        to_number: str,
+        labeller_name: str,
+        tasks_completed_today: int,
+        total_labels_by_labeller: int
+    ) -> bool:
+        """
+        Notify admin when a labeller has completed all their assigned tasks.
+        
+        Args:
+            to_number: Admin's WhatsApp number
+            labeller_name: Name of the labeller
+            tasks_completed_today: How many tasks they completed today
+            total_labels_by_labeller: Total labels created by this labeller
+        """
+        message = f"""🏆 *All Tasks Completed!*
+
+👤 Labeller: *{labeller_name}*
+✅ Has completed all assigned tasks!
+
+📊 Today: *{tasks_completed_today}* task(s) completed
+🏷️ Total labels: *{total_labels_by_labeller:,}*
+
+Ready for new assignments! 📋"""
         
         return self.send_message(to_number, message)
     

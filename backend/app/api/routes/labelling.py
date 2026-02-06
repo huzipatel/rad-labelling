@@ -644,9 +644,14 @@ async def save_label(
         try:
             from app.tasks.notification_tasks import send_task_completion_notification
             send_task_completion_notification.delay(str(task.id), str(current_user.id))
+            print(f"[Notification] Queued task completion notification for task {task.id}")
         except Exception as e:
-            # Don't fail the request if notification fails
-            print(f"[Notification] Failed to queue task completion notification: {e}")
+            # Celery might not be running - try direct send
+            print(f"[Notification] Celery not available, trying direct send: {e}")
+            try:
+                await send_task_completion_direct(db, task, current_user)
+            except Exception as direct_error:
+                print(f"[Notification] Direct send also failed: {direct_error}")
     
     return LabelSaveResponse(
         message="Label saved successfully",
@@ -795,4 +800,126 @@ async def get_labelling_progress(
 
 # Import Integer for the query
 from sqlalchemy import Integer
+
+
+async def send_task_completion_direct(db: AsyncSession, task: Task, labeller: User):
+    """
+    Send task completion notification directly (without Celery).
+    Also sends all-tasks-completed notification if labeller has no remaining tasks.
+    """
+    from app.services.whatsapp_service import whatsapp_service
+    from app.models.notification import NotificationSettings, NotificationLog, UserNotificationPreferences
+    from sqlalchemy import and_
+    
+    # Get notification settings
+    result = await db.execute(select(NotificationSettings).limit(1))
+    settings = result.scalar_one_or_none()
+    
+    if not settings or not settings.task_completion_enabled:
+        print("[Notification] Task completion notifications are disabled")
+        return
+    
+    # Check if labeller has any remaining tasks
+    remaining_tasks_result = await db.execute(
+        select(func.count(Task.id)).where(
+            and_(
+                Task.assigned_to == labeller.id,
+                Task.status.in_(["assigned", "in_progress", "ready"])
+            )
+        )
+    )
+    remaining_tasks_count = remaining_tasks_result.scalar() or 0
+    
+    # Count tasks completed today by this labeller
+    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    tasks_today_result = await db.execute(
+        select(func.count(Task.id)).where(
+            and_(
+                Task.assigned_to == labeller.id,
+                Task.status == "completed",
+                Task.completed_at >= today_start
+            )
+        )
+    )
+    tasks_completed_today = tasks_today_result.scalar() or 0
+    
+    # Count total labels by this labeller
+    total_labels_result = await db.execute(
+        select(func.count(Label.id)).where(Label.labeller_id == labeller.id)
+    )
+    total_labels_by_labeller = total_labels_result.scalar() or 0
+    
+    # Get admin(s) with WhatsApp numbers
+    admins_result = await db.execute(
+        select(User).where(
+            and_(
+                User.role.in_(["admin", "labelling_manager"]),
+                User.whatsapp_number.isnot(None),
+                User.is_active == True
+            )
+        )
+    )
+    admins = admins_result.scalars().all()
+    
+    if not admins:
+        print("[Notification] No admins with WhatsApp numbers found")
+        return
+    
+    for admin in admins:
+        # Check if admin has opted out
+        prefs_result = await db.execute(
+            select(UserNotificationPreferences).where(
+                UserNotificationPreferences.user_id == admin.id
+            )
+        )
+        prefs = prefs_result.scalar_one_or_none()
+        
+        if prefs and prefs.opt_out_all_whatsapp:
+            continue
+        
+        # Send task completion notification
+        task_name = task.name or task.group_value or "Unknown"
+        success = whatsapp_service.send_task_completion_notification(
+            to_number=admin.whatsapp_number,
+            task_name=task_name,
+            labeller_name=labeller.name,
+            total_images=task.total_locations or 0,
+            completion_time=datetime.utcnow().strftime("%H:%M")
+        )
+        
+        print(f"[Notification] Task completion sent to {admin.name}: {'success' if success else 'failed'}")
+        
+        # Log notification
+        log = NotificationLog(
+            notification_type="task_completion",
+            recipient_id=admin.id,
+            recipient_number=admin.whatsapp_number,
+            message_preview=f"Task '{task_name}' completed by {labeller.name}",
+            status="sent" if success else "failed",
+            task_id=task.id
+        )
+        db.add(log)
+        
+        # If labeller has no remaining tasks, send additional notification
+        if remaining_tasks_count == 0:
+            all_tasks_success = whatsapp_service.send_all_tasks_completed_notification(
+                to_number=admin.whatsapp_number,
+                labeller_name=labeller.name,
+                tasks_completed_today=tasks_completed_today,
+                total_labels_by_labeller=total_labels_by_labeller
+            )
+            
+            print(f"[Notification] All tasks completed sent to {admin.name}: {'success' if all_tasks_success else 'failed'}")
+            
+            # Log all tasks completed notification
+            all_tasks_log = NotificationLog(
+                notification_type="all_tasks_completed",
+                recipient_id=admin.id,
+                recipient_number=admin.whatsapp_number,
+                message_preview=f"{labeller.name} has completed all assigned tasks!",
+                status="sent" if all_tasks_success else "failed"
+            )
+            db.add(all_tasks_log)
+    
+    await db.commit()
 
