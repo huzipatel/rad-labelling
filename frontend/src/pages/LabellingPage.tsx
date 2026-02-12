@@ -41,6 +41,8 @@ interface LocationData {
     advertising_present: boolean | null
     bus_shelter_present: boolean | null
     number_of_panels: number | null
+    number_of_faces: number | null
+    screen_type: string | null
     pole_stop: boolean | null
     unmarked_stop: boolean | null
     selected_image: number | null
@@ -55,6 +57,8 @@ interface LabelFormData {
   advertising_present: boolean | null
   bus_shelter_present: boolean | null
   number_of_panels: number | null
+  number_of_faces: number
+  screen_type: string | null
   pole_stop: boolean | null
   shelter_stop: boolean | null
   unmarked_stop: boolean | null
@@ -68,6 +72,8 @@ const defaultLabelData: LabelFormData = {
   advertising_present: null,
   bus_shelter_present: null,
   number_of_panels: null,
+  number_of_faces: 2,
+  screen_type: null,
   pole_stop: null,
   shelter_stop: null,
   unmarked_stop: null,
@@ -266,12 +272,15 @@ export default function LabellingPage({ isQualityControl = false }: LabellingPag
           advertising_present: response.data.label.advertising_present,
           bus_shelter_present: response.data.label.bus_shelter_present,
           number_of_panels: response.data.label.number_of_panels,
+          number_of_faces: response.data.label.number_of_faces ?? 2,
+          screen_type: response.data.label.screen_type,
           pole_stop: response.data.label.pole_stop,
           unmarked_stop: response.data.label.unmarked_stop,
           selected_image: response.data.label.selected_image,
           notes: response.data.label.notes || '',
           unable_to_label: response.data.label.unable_to_label,
           unable_reason: response.data.label.unable_reason || '',
+          shelter_stop: false, // Legacy field
         })
         
         // Store label ID for comments - load for all users, not just QC
@@ -870,6 +879,109 @@ export default function LabellingPage({ isQualityControl = false }: LabellingPag
                     value={formData.number_of_panels ?? ''}
                     onChange={(e) => setFormData({ ...formData, number_of_panels: e.target.value ? parseInt(e.target.value) : null })}
                   />
+                </div>
+
+                {/* Number of faces */}
+                <div>
+                  <label className="govuk-label" htmlFor="faces">
+                    Number of Faces
+                  </label>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <button
+                      type="button"
+                      onClick={() => setFormData({ ...formData, number_of_faces: Math.max(1, formData.number_of_faces - 1) })}
+                      style={{
+                        width: '36px',
+                        height: '36px',
+                        border: '1px solid #b1b4b6',
+                        borderRadius: '4px',
+                        background: '#f3f4f6',
+                        cursor: 'pointer',
+                        fontSize: '18px',
+                        fontWeight: 'bold',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center'
+                      }}
+                    >
+                      −
+                    </button>
+                    <input
+                      className="govuk-input"
+                      id="faces"
+                      type="number"
+                      min="1"
+                      style={{ width: '60px', textAlign: 'center' }}
+                      value={formData.number_of_faces}
+                      onChange={(e) => setFormData({ ...formData, number_of_faces: e.target.value ? Math.max(1, parseInt(e.target.value)) : 2 })}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setFormData({ ...formData, number_of_faces: formData.number_of_faces + 1 })}
+                      style={{
+                        width: '36px',
+                        height: '36px',
+                        border: '1px solid #b1b4b6',
+                        borderRadius: '4px',
+                        background: '#f3f4f6',
+                        cursor: 'pointer',
+                        fontSize: '18px',
+                        fontWeight: 'bold',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center'
+                      }}
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+
+                {/* Screen type */}
+                <div>
+                  <label className="govuk-label" style={{ marginBottom: '12px' }}>Type of Screen</label>
+                  <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                    <label style={{ 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      gap: '8px', 
+                      padding: '10px 16px',
+                      background: formData.screen_type === 'Paper' ? '#fef3c7' : '#f3f4f6',
+                      borderRadius: '8px',
+                      cursor: 'pointer',
+                      border: formData.screen_type === 'Paper' ? '2px solid #f59e0b' : '2px solid transparent',
+                      transition: 'all 0.15s ease'
+                    }}>
+                      <input
+                        type="radio"
+                        name="screen_type"
+                        checked={formData.screen_type === 'Paper'}
+                        onChange={() => setFormData({ ...formData, screen_type: 'Paper' })}
+                        style={{ width: '18px', height: '18px' }}
+                      />
+                      <span style={{ fontWeight: 500 }}>📄 Paper</span>
+                    </label>
+                    <label style={{ 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      gap: '8px', 
+                      padding: '10px 16px',
+                      background: formData.screen_type === 'Expected Digital' ? '#dbeafe' : '#f3f4f6',
+                      borderRadius: '8px',
+                      cursor: 'pointer',
+                      border: formData.screen_type === 'Expected Digital' ? '2px solid #3b82f6' : '2px solid transparent',
+                      transition: 'all 0.15s ease'
+                    }}>
+                      <input
+                        type="radio"
+                        name="screen_type"
+                        checked={formData.screen_type === 'Expected Digital'}
+                        onChange={() => setFormData({ ...formData, screen_type: 'Expected Digital' })}
+                        style={{ width: '18px', height: '18px' }}
+                      />
+                      <span style={{ fontWeight: 500 }}>📺 Expected Digital</span>
+                    </label>
+                  </div>
                 </div>
 
                 {/* Stop type checkboxes */}

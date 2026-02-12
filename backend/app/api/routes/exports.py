@@ -73,6 +73,8 @@ async def export_csv(
                 "advertising_present": label.advertising_present if label else None,
                 "bus_shelter_present": label.bus_shelter_present if label else None,
                 "number_of_panels": label.number_of_panels if label else None,
+                "number_of_faces": label.number_of_faces if label else None,
+                "screen_type": label.screen_type if label else None,
                 "pole_stop": label.pole_stop if label else None,
                 "unmarked_stop": label.unmarked_stop if label else None,
                 "selected_image": label.selected_image if label else None,
@@ -224,6 +226,14 @@ async def get_task_summary(
     panels = [l.number_of_panels for l in labels if l.number_of_panels is not None]
     avg_panels = sum(panels) / len(panels) if panels else 0
     
+    # Calculate face statistics
+    faces = [l.number_of_faces for l in labels if l.number_of_faces is not None]
+    avg_faces = sum(faces) / len(faces) if faces else 2
+    
+    # Calculate screen type statistics
+    paper_count = sum(1 for l in labels if l.screen_type == 'Paper')
+    digital_count = sum(1 for l in labels if l.screen_type == 'Expected Digital')
+    
     # Calculate time statistics
     durations = [l.labelling_duration_seconds for l in labels if l.labelling_duration_seconds]
     avg_time = sum(durations) / len(durations) if durations else 0
@@ -243,6 +253,9 @@ async def get_task_summary(
         "unable_to_label": unable_count,
         "advertising_rate": round(with_advertising / total_labelled * 100 if total_labelled > 0 else 0, 1),
         "average_panels": round(avg_panels, 1),
+        "average_faces": round(avg_faces, 1),
+        "paper_screens": paper_count,
+        "digital_screens": digital_count,
         "average_labelling_time_seconds": round(avg_time, 1),
         "status": task.status,
         "started_at": task.started_at.isoformat() if task.started_at else None,
@@ -350,6 +363,8 @@ async def export_task_csv(
             "advertising_present": label.advertising_present if label else None,
             "bus_shelter_present": label.bus_shelter_present if label else None,
             "number_of_panels": label.number_of_panels if label else None,
+            "number_of_faces": label.number_of_faces if label else None,
+            "screen_type": label.screen_type if label else None,
             "pole_stop": label.pole_stop if label else None,
             "unmarked_stop": label.unmarked_stop if label else None,
             "selected_image": label.selected_image if label else None,
@@ -616,6 +631,16 @@ async def bulk_export_csv(
                 if label:
                     row["labelled"] = True
                     row["labelled_at"] = label.created_at.isoformat() if label.created_at else None
+                    row["advertising_present"] = label.advertising_present
+                    row["bus_shelter_present"] = label.bus_shelter_present
+                    row["number_of_panels"] = label.number_of_panels
+                    row["number_of_faces"] = label.number_of_faces
+                    row["screen_type"] = label.screen_type
+                    row["pole_stop"] = label.pole_stop
+                    row["unmarked_stop"] = label.unmarked_stop
+                    row["selected_image"] = label.selected_image
+                    row["unable_to_label"] = label.unable_to_label
+                    row["unable_reason"] = label.unable_reason
                     if label.custom_fields:
                         for key, value in label.custom_fields.items():
                             row[f"label_{key}"] = value

@@ -25,6 +25,8 @@ class LabelData(BaseModel):
     advertising_present: Optional[bool] = None
     bus_shelter_present: Optional[bool] = None
     number_of_panels: Optional[int] = None
+    number_of_faces: Optional[int] = 2  # Default to 2 faces
+    screen_type: Optional[str] = None  # "Paper" or "Expected Digital"
     pole_stop: Optional[bool] = None
     unmarked_stop: Optional[bool] = None
     selected_image: Optional[int] = None
@@ -451,6 +453,8 @@ async def get_location_for_labelling(
             "advertising_present": label.advertising_present,
             "bus_shelter_present": label.bus_shelter_present,
             "number_of_panels": label.number_of_panels,
+            "number_of_faces": label.number_of_faces,
+            "screen_type": label.screen_type,
             "pole_stop": label.pole_stop,
             "unmarked_stop": label.unmarked_stop,
             "selected_image": label.selected_image,
@@ -614,6 +618,8 @@ async def save_label(
     label.advertising_present = label_data.advertising_present
     label.bus_shelter_present = label_data.bus_shelter_present
     label.number_of_panels = label_data.number_of_panels
+    label.number_of_faces = label_data.number_of_faces
+    label.screen_type = label_data.screen_type
     label.pole_stop = label_data.pole_stop
     label.unmarked_stop = label_data.unmarked_stop
     label.selected_image = label_data.selected_image

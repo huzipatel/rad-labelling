@@ -39,6 +39,8 @@ class Label(Base):
     advertising_present: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     bus_shelter_present: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     number_of_panels: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    number_of_faces: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=2)
+    screen_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)  # "Paper" or "Expected Digital"
     pole_stop: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     unmarked_stop: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     
