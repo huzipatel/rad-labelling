@@ -867,41 +867,54 @@ async def list_tasks(
     offset = (page - 1) * page_size
     query = query.offset(offset).limit(page_size).order_by(Task.created_at.desc())
     
-    result = await db.execute(query)
-    tasks = result.scalars().all()
+    try:
+        result = await db.execute(query)
+        tasks = result.scalars().all()
+    except Exception as e:
+        print(f"[list_tasks] Error executing query: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Database query failed: {str(e)}. This may be due to a pending migration."
+        )
     
     # Build response
     task_responses = []
     for task in tasks:
-        # Get assignee name
-        assignee_name = None
-        if task.assignee:
-            assignee_name = task.assignee.name
-        
-        task_responses.append(TaskResponse(
-            id=str(task.id),
-            location_type_id=str(task.location_type_id),
-            location_type_name=task.location_type.display_name,
-            council=task.council,
-            group_field=task.group_field,
-            group_value=task.group_value,
-            name=task.name or task.council,
-            assigned_to=str(task.assigned_to) if task.assigned_to else None,
-            assignee_name=assignee_name,
-            status=task.status,
-            total_locations=task.total_locations,
-            completed_locations=task.completed_locations,
-            failed_locations=task.failed_locations,
-            images_downloaded=task.images_downloaded,
-            total_images=task.total_images,
-            completion_percentage=task.completion_percentage,
-            download_progress=task.download_progress,
-            created_at=task.created_at,
-            assigned_at=task.assigned_at,
-            started_at=task.started_at,
-            completed_at=task.completed_at,
-            filters=getattr(task, 'filters', None)
-        ))
+        try:
+            # Get assignee name
+            assignee_name = None
+            if task.assignee:
+                assignee_name = task.assignee.name
+            
+            task_responses.append(TaskResponse(
+                id=str(task.id),
+                location_type_id=str(task.location_type_id),
+                location_type_name=task.location_type.display_name,
+                council=task.council,
+                group_field=task.group_field,
+                group_value=task.group_value,
+                name=task.name or task.council,
+                assigned_to=str(task.assigned_to) if task.assigned_to else None,
+                assignee_name=assignee_name,
+                status=task.status,
+                total_locations=task.total_locations,
+                completed_locations=task.completed_locations,
+                failed_locations=task.failed_locations,
+                images_downloaded=task.images_downloaded,
+                total_images=task.total_images,
+                completion_percentage=task.completion_percentage,
+                download_progress=task.download_progress,
+                created_at=task.created_at,
+                assigned_at=task.assigned_at,
+                started_at=task.started_at,
+                completed_at=task.completed_at,
+                filters=getattr(task, 'filters', None)
+            ))
+        except Exception as e:
+            print(f"[list_tasks] Error building response for task {task.id}: {type(e).__name__}: {e}")
+            continue
     
     return TaskListResponse(
         tasks=task_responses,
@@ -928,36 +941,50 @@ async def get_my_tasks(
     
     query = query.order_by(Task.assigned_at.desc())
     
-    result = await db.execute(query)
-    tasks = result.scalars().all()
-    
-    return [
-        TaskResponse(
-            id=str(t.id),
-            location_type_id=str(t.location_type_id),
-            location_type_name=t.location_type.display_name,
-            council=t.council,
-            group_field=t.group_field,
-            group_value=t.group_value,
-            name=t.name or t.council,
-            assigned_to=str(t.assigned_to) if t.assigned_to else None,
-            assignee_name=current_user.name,
-            status=t.status,
-            total_locations=t.total_locations,
-            completed_locations=t.completed_locations,
-            failed_locations=t.failed_locations,
-            images_downloaded=t.images_downloaded,
-            total_images=t.total_images,
-            completion_percentage=t.completion_percentage,
-            download_progress=t.download_progress,
-            created_at=t.created_at,
-            assigned_at=t.assigned_at,
-            started_at=t.started_at,
-            completed_at=t.completed_at,
-            filters=getattr(t, 'filters', None)
+    try:
+        result = await db.execute(query)
+        tasks = result.scalars().all()
+    except Exception as e:
+        print(f"[get_my_tasks] Error executing query: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Database query failed: {str(e)}. This may be due to a pending migration."
         )
-        for t in tasks
-    ]
+    
+    task_responses = []
+    for t in tasks:
+        try:
+            task_responses.append(TaskResponse(
+                id=str(t.id),
+                location_type_id=str(t.location_type_id),
+                location_type_name=t.location_type.display_name,
+                council=t.council,
+                group_field=t.group_field,
+                group_value=t.group_value,
+                name=t.name or t.council,
+                assigned_to=str(t.assigned_to) if t.assigned_to else None,
+                assignee_name=current_user.name,
+                status=t.status,
+                total_locations=t.total_locations,
+                completed_locations=t.completed_locations,
+                failed_locations=t.failed_locations,
+                images_downloaded=t.images_downloaded,
+                total_images=t.total_images,
+                completion_percentage=t.completion_percentage,
+                download_progress=t.download_progress,
+                created_at=t.created_at,
+                assigned_at=t.assigned_at,
+                started_at=t.started_at,
+                completed_at=t.completed_at,
+                filters=getattr(t, 'filters', None)
+            ))
+        except Exception as e:
+            print(f"[get_my_tasks] Error building response for task {t.id}: {type(e).__name__}: {e}")
+            continue
+    
+    return task_responses
 
 
 @router.get("/stats", response_model=TaskStats)
