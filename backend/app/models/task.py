@@ -102,7 +102,7 @@ class Task(Base):
     filters: Mapped[Optional[List]] = mapped_column(
         JSONB,
         nullable=True,
-        default=list
+        default=None
     )
     
     # Relationships

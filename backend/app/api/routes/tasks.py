@@ -900,7 +900,7 @@ async def list_tasks(
             assigned_at=task.assigned_at,
             started_at=task.started_at,
             completed_at=task.completed_at,
-            filters=task.filters
+            filters=getattr(task, 'filters', None)
         ))
     
     return TaskListResponse(
@@ -954,7 +954,7 @@ async def get_my_tasks(
             assigned_at=t.assigned_at,
             started_at=t.started_at,
             completed_at=t.completed_at,
-            filters=t.filters
+            filters=getattr(t, 'filters', None)
         )
         for t in tasks
     ]
@@ -1611,7 +1611,7 @@ async def get_tasks_with_images(
                     assigned_at=t.assigned_at,
                     started_at=t.started_at,
                     completed_at=t.completed_at,
-                    filters=t.filters
+                    filters=getattr(t, 'filters', None)
                 ))
             except Exception as task_err:
                 print(f"[get_tasks_with_images] Error processing task {t.id}: {task_err}")
@@ -1679,7 +1679,7 @@ async def get_task(
         assigned_at=task.assigned_at,
         started_at=task.started_at,
         completed_at=task.completed_at,
-        filters=task.filters
+        filters=getattr(task, 'filters', None)
     )
 
 

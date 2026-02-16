@@ -142,9 +142,10 @@ async def get_task_locations(
             base_query = base_query.where(Location.road_classification == task.group_value)
         
         # Apply additional task filters (e.g., BusStopType = "MKD")
-        if task.filters:
+        task_filters = getattr(task, 'filters', None)
+        if task_filters:
             from app.utils.task_filters import apply_task_filters
-            base_query = apply_task_filters(base_query, task.filters)
+            base_query = apply_task_filters(base_query, task_filters)
         
         # Get total count with filters applied
         count_result = await db.execute(select(func.count()).select_from(base_query.subquery()))
@@ -288,9 +289,10 @@ async def get_location_by_id(
         base_query = base_query.where(Location.road_classification == task.group_value)
     
     # Apply additional task filters (e.g., BusStopType = "MKD")
-    if task.filters:
+    task_filters = getattr(task, 'filters', None)
+    if task_filters:
         from app.utils.task_filters import apply_task_filters
-        base_query = apply_task_filters(base_query, task.filters)
+        base_query = apply_task_filters(base_query, task_filters)
     
     # Get all locations ordered by identifier to find the index
     locations_result = await db.execute(
@@ -391,9 +393,10 @@ async def get_location_for_labelling(
                 filter_applied = True
         
         # Apply additional task filters (e.g., BusStopType = "MKD")
-        if task.filters:
+        task_filters = getattr(task, 'filters', None)
+        if task_filters:
             from app.utils.task_filters import apply_task_filters
-            base_query = apply_task_filters(base_query, task.filters)
+            base_query = apply_task_filters(base_query, task_filters)
         
         # First, count total locations to give better error messages
         count_result = await db.execute(select(func.count()).select_from(base_query.subquery()))
@@ -601,10 +604,11 @@ async def search_location(
         base_query = base_query.where(Location.road_classification == task.group_value)
     
     # Apply additional task filters (e.g., BusStopType = "MKD")
-    if task.filters:
+    task_filters = getattr(task, 'filters', None)
+    if task_filters:
         from app.utils.task_filters import apply_task_filters
-        base_query = apply_task_filters(base_query, task.filters)
-    
+        base_query = apply_task_filters(base_query, task_filters)
+
     # Search by identifier within task scope
     search_result = await db.execute(
         base_query.where(Location.identifier.ilike(f"%{query}%")).limit(20)
