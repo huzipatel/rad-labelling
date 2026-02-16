@@ -1,7 +1,7 @@
 """Add label_comments table
 
 Revision ID: 002
-Revises: 001_initial_schema
+Revises: 001
 Create Date: 2026-01-27
 
 """
@@ -11,7 +11,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision = '002'
-down_revision = '001_initial_schema'
+down_revision = '001'
 branch_labels = None
 depends_on = None
 

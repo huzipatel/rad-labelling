@@ -1,7 +1,7 @@
 """Add upload_jobs table for large file uploads.
 
 Revision ID: 003
-Revises: 002
+Revises: 002b
 Create Date: 2024-01-15
 """
 from alembic import op
@@ -10,7 +10,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers
 revision = '003'
-down_revision = '002'
+down_revision = '002b'
 branch_labels = None
 depends_on = None
 
