@@ -61,6 +61,7 @@ class TaskResponse(BaseModel):
     assigned_at: Optional[datetime]
     started_at: Optional[datetime]
     completed_at: Optional[datetime]
+    filters: Optional[List[dict]] = None
 
 
 class TaskListResponse(BaseModel):
@@ -898,7 +899,8 @@ async def list_tasks(
             created_at=task.created_at,
             assigned_at=task.assigned_at,
             started_at=task.started_at,
-            completed_at=task.completed_at
+            completed_at=task.completed_at,
+            filters=task.filters
         ))
     
     return TaskListResponse(
@@ -951,7 +953,8 @@ async def get_my_tasks(
             created_at=t.created_at,
             assigned_at=t.assigned_at,
             started_at=t.started_at,
-            completed_at=t.completed_at
+            completed_at=t.completed_at,
+            filters=t.filters
         )
         for t in tasks
     ]
@@ -1607,7 +1610,8 @@ async def get_tasks_with_images(
                     created_at=t.created_at,
                     assigned_at=t.assigned_at,
                     started_at=t.started_at,
-                    completed_at=t.completed_at
+                    completed_at=t.completed_at,
+                    filters=t.filters
                 ))
             except Exception as task_err:
                 print(f"[get_tasks_with_images] Error processing task {t.id}: {task_err}")
@@ -1674,7 +1678,8 @@ async def get_task(
         created_at=task.created_at,
         assigned_at=task.assigned_at,
         started_at=task.started_at,
-        completed_at=task.completed_at
+        completed_at=task.completed_at,
+        filters=task.filters
     )
 
 
@@ -1730,6 +1735,247 @@ async def assign_task(
     await db.commit()
     
     return {"message": "Task assigned successfully"}
+
+
+class TaskFilterUpdate(BaseModel):
+    """Update task filters request."""
+    filters: List[dict]  # [{"field": "BusStopType", "operator": "equals", "value": "MKD"}, ...]
+
+
+class FilterFieldInfo(BaseModel):
+    """Info about an available filter field."""
+    field: str
+    sample_values: List[str]
+    total_distinct: int
+
+
+@router.put("/{task_id}/filters")
+async def update_task_filters(
+    task_id: uuid.UUID,
+    request: TaskFilterUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_manager)
+):
+    """
+    Update the filters for a task.
+    
+    Filters are applied to limit which locations are shown/downloaded.
+    Example: {"filters": [{"field": "BusStopType", "operator": "equals", "value": "MKD"}]}
+    
+    Supported operators:
+    - equals: field == value
+    - not_equals: field != value
+    - contains: field contains value (case-insensitive)
+    - in_list: field in [value1, value2, ...]
+    - is_null: field is null or empty
+    - is_not_null: field is not null and not empty
+    """
+    from app.utils.task_filters import validate_filters
+    
+    # Validate filters
+    is_valid, error_msg = validate_filters(request.filters)
+    if not is_valid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid filters: {error_msg}"
+        )
+    
+    # Get task
+    result = await db.execute(
+        select(Task).where(Task.id == task_id)
+    )
+    task = result.scalar_one_or_none()
+    
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Task not found"
+        )
+    
+    # Update filters
+    task.filters = request.filters
+    
+    # Recalculate total_locations with filters applied
+    if not task.is_sample:
+        from app.utils.task_filters import apply_task_filters
+        
+        base_query = select(func.count(Location.id)).where(
+            Location.location_type_id == task.location_type_id
+        )
+        
+        # Apply group field filter
+        if task.group_field and task.group_field.startswith("original_"):
+            original_key = task.group_field.replace("original_", "")
+            base_query = base_query.where(
+                text(f"original_data->>'{original_key}' = :group_value")
+            ).params(group_value=task.group_value)
+        elif task.group_field == "council" or not task.group_field:
+            filter_value = task.group_value or task.council
+            if filter_value:
+                base_query = base_query.where(Location.council == filter_value)
+        elif task.group_field == "combined_authority":
+            if task.group_value:
+                base_query = base_query.where(Location.combined_authority == task.group_value)
+        elif task.group_field == "road_classification":
+            if task.group_value:
+                base_query = base_query.where(Location.road_classification == task.group_value)
+        
+        # Apply additional filters
+        base_query = apply_task_filters(base_query, request.filters)
+        
+        count_result = await db.execute(base_query)
+        task.total_locations = count_result.scalar() or 0
+    
+    await db.commit()
+    
+    return {
+        "message": "Task filters updated successfully",
+        "filters": task.filters,
+        "total_locations": task.total_locations
+    }
+
+
+@router.get("/{task_id}/filter-fields")
+async def get_task_filter_fields(
+    task_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_manager)
+):
+    """
+    Get available filter fields and their distinct values for a task.
+    
+    Returns fields from the original spreadsheet data that can be used for filtering.
+    """
+    # Get task
+    result = await db.execute(
+        select(Task).where(Task.id == task_id)
+    )
+    task = result.scalar_one_or_none()
+    
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Task not found"
+        )
+    
+    # Build base query for task's locations
+    base_query = select(Location).where(Location.location_type_id == task.location_type_id)
+    
+    # Apply group field filter
+    if task.group_field and task.group_field.startswith("original_"):
+        original_key = task.group_field.replace("original_", "")
+        base_query = base_query.where(
+            text(f"original_data->>'{original_key}' = :group_value")
+        ).params(group_value=task.group_value)
+    elif task.group_field == "council" or not task.group_field:
+        filter_value = task.group_value or task.council
+        if filter_value:
+            base_query = base_query.where(Location.council == filter_value)
+    elif task.group_field == "combined_authority":
+        if task.group_value:
+            base_query = base_query.where(Location.combined_authority == task.group_value)
+    elif task.group_field == "road_classification":
+        if task.group_value:
+            base_query = base_query.where(Location.road_classification == task.group_value)
+    
+    # Get a sample location to find available fields
+    sample_result = await db.execute(base_query.limit(1))
+    sample_location = sample_result.scalar_one_or_none()
+    
+    if not sample_location or not sample_location.original_data:
+        return {
+            "fields": [],
+            "current_filters": task.filters or []
+        }
+    
+    # Get distinct values for each field (limit to reasonable fields)
+    fields_info = []
+    for field_name in sample_location.original_data.keys():
+        # Get distinct values for this field
+        distinct_query = select(
+            text(f"original_data->>'{field_name}' as field_value"),
+            func.count().label('count')
+        ).select_from(base_query.subquery()).group_by(
+            text(f"original_data->>'{field_name}'")
+        ).order_by(func.count().desc()).limit(20)
+        
+        distinct_result = await db.execute(distinct_query)
+        distinct_rows = distinct_result.all()
+        
+        # Filter out None values and collect sample values
+        sample_values = [row[0] for row in distinct_rows if row[0] is not None]
+        total_distinct = len(distinct_rows)
+        
+        if sample_values:  # Only include fields that have values
+            fields_info.append({
+                "field": field_name,
+                "sample_values": sample_values[:10],  # Top 10 values
+                "total_distinct": total_distinct
+            })
+    
+    # Sort by field name
+    fields_info.sort(key=lambda x: x["field"])
+    
+    return {
+        "fields": fields_info,
+        "current_filters": task.filters or []
+    }
+
+
+@router.delete("/{task_id}/filters")
+async def clear_task_filters(
+    task_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_manager)
+):
+    """Clear all filters from a task."""
+    # Get task
+    result = await db.execute(
+        select(Task).where(Task.id == task_id)
+    )
+    task = result.scalar_one_or_none()
+    
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Task not found"
+        )
+    
+    # Clear filters
+    task.filters = []
+    
+    # Recalculate total_locations without filters
+    if not task.is_sample:
+        base_query = select(func.count(Location.id)).where(
+            Location.location_type_id == task.location_type_id
+        )
+        
+        # Apply group field filter only
+        if task.group_field and task.group_field.startswith("original_"):
+            original_key = task.group_field.replace("original_", "")
+            base_query = base_query.where(
+                text(f"original_data->>'{original_key}' = :group_value")
+            ).params(group_value=task.group_value)
+        elif task.group_field == "council" or not task.group_field:
+            filter_value = task.group_value or task.council
+            if filter_value:
+                base_query = base_query.where(Location.council == filter_value)
+        elif task.group_field == "combined_authority":
+            if task.group_value:
+                base_query = base_query.where(Location.combined_authority == task.group_value)
+        elif task.group_field == "road_classification":
+            if task.group_value:
+                base_query = base_query.where(Location.road_classification == task.group_value)
+        
+        count_result = await db.execute(base_query)
+        task.total_locations = count_result.scalar() or 0
+    
+    await db.commit()
+    
+    return {
+        "message": "Task filters cleared",
+        "total_locations": task.total_locations
+    }
 
 
 @router.post("/bulk-assign")

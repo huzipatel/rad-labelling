@@ -155,6 +155,12 @@ def download_task_images_celery(self, task_id: str, download_log_id: str = None)
                     location_query = base_query
                     print(f"[Celery GSV Download] No group filter - getting all locations for location_type_id={task.location_type_id}")
                 
+                # Apply additional task filters (e.g., BusStopType = "MKD")
+                if task.filters:
+                    from app.utils.task_filters import apply_task_filters
+                    location_query = apply_task_filters(location_query, task.filters)
+                    print(f"[Celery GSV Download] Applied {len(task.filters)} additional filter(s): {task.filters}")
+                
                 locations_result = await db.execute(location_query)
                 locations = locations_result.scalars().all()
                 
@@ -422,6 +428,12 @@ def download_all_tasks_sequential(self, task_ids: list):
                         location_query = base_query.where(Location.council == task.council)
                     else:
                         location_query = base_query
+                    
+                    # Apply additional task filters (e.g., BusStopType = "MKD")
+                    if task.filters:
+                        from app.utils.task_filters import apply_task_filters
+                        location_query = apply_task_filters(location_query, task.filters)
+                        print(f"[Celery Sequential] Applied {len(task.filters)} additional filter(s)")
                     
                     locations_result = await db.execute(location_query)
                     locations = locations_result.scalars().all()

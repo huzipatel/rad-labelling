@@ -169,6 +169,14 @@ export const tasksApi = {
     api.post('/tasks/stats/reconcile-images', null, { params: { dry_run: dryRun } }),
   getImageStats: () =>
     api.get('/tasks/debug/image-stats'),
+  
+  // Task filters (for filtering locations by spreadsheet columns like BusStopType)
+  getTaskFilterFields: (taskId: string) =>
+    api.get(`/tasks/${taskId}/filter-fields`),
+  updateTaskFilters: (taskId: string, filters: Array<{field: string, operator: string, value: any}>) =>
+    api.put(`/tasks/${taskId}/filters`, { filters }),
+  clearTaskFilters: (taskId: string) =>
+    api.delete(`/tasks/${taskId}/filters`),
 }
 
 // Export API

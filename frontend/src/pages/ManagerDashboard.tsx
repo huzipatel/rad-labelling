@@ -4,6 +4,13 @@ import { tasksApi, spreadsheetsApi, usersApi, exportsApi } from '../services/api
 import Loading from '../components/common/Loading'
 import ProgressBar from '../components/common/ProgressBar'
 import Modal from '../components/common/Modal'
+import TaskFilterModal from '../components/TaskFilterModal'
+
+interface TaskFilter {
+  field: string
+  operator: string
+  value: any
+}
 
 interface Task {
   id: string
@@ -27,6 +34,7 @@ interface Task {
   assigned_at: string | null
   started_at: string | null
   completed_at: string | null
+  filters?: TaskFilter[]
 }
 
 interface Labeller {
@@ -148,6 +156,9 @@ export default function ManagerDashboard() {
     total_tasks_affected: number
   } | null>(null)
   const [loadingFilterFields, setLoadingFilterFields] = useState(false)
+  
+  // Task filter modal state (per-task filtering)
+  const [taskFilterModalOpen, setTaskFilterModalOpen] = useState(false)
   const [loadingFilterPreview, setLoadingFilterPreview] = useState(false)
   const [applyingFilter, setApplyingFilter] = useState(false)
   
@@ -2555,6 +2566,56 @@ export default function ManagerDashboard() {
                     </div>
                   </dl>
                 </div>
+
+                {/* Task Filters Section */}
+                <div style={{ 
+                  background: '#f0fdf4', 
+                  borderRadius: '12px', 
+                  padding: '20px',
+                  marginTop: '24px',
+                  border: '1px solid #bbf7d0'
+                }}>
+                  <h3 className="govuk-heading-s" style={{ marginBottom: '12px' }}>
+                    🔍 Location Filters
+                  </h3>
+                  <p className="govuk-body-s" style={{ color: '#6b7280', marginBottom: '12px' }}>
+                    Filter which locations are shown/downloaded based on spreadsheet columns (e.g., BusStopType = "MKD").
+                  </p>
+                  
+                  {selectedTask.filters && selectedTask.filters.length > 0 ? (
+                    <div style={{ marginBottom: '12px' }}>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                        {selectedTask.filters.map((filter, idx) => (
+                          <span 
+                            key={idx}
+                            style={{
+                              padding: '4px 10px',
+                              background: '#dcfce7',
+                              borderRadius: '16px',
+                              fontSize: '13px',
+                              fontWeight: 500,
+                              color: '#166534'
+                            }}
+                          >
+                            {filter.field} {filter.operator === 'equals' ? '=' : filter.operator} "{filter.value}"
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="govuk-body-s" style={{ fontStyle: 'italic', color: '#9ca3af', marginBottom: '12px' }}>
+                      No filters applied - showing all locations.
+                    </p>
+                  )}
+                  
+                  <button
+                    className="govuk-button govuk-button--secondary"
+                    onClick={() => setTaskFilterModalOpen(true)}
+                    style={{ marginBottom: 0 }}
+                  >
+                    {selectedTask.filters && selectedTask.filters.length > 0 ? '✏️ Edit Filters' : '+ Add Filters'}
+                  </button>
+                </div>
               </>
             )}
 
@@ -3359,6 +3420,24 @@ export default function ManagerDashboard() {
           </>
         )}
       </Modal>
+
+      {/* Task Filter Modal */}
+      {selectedTask && (
+        <TaskFilterModal
+          isOpen={taskFilterModalOpen}
+          onClose={() => setTaskFilterModalOpen(false)}
+          taskId={selectedTask.id}
+          taskName={selectedTask.name || selectedTask.group_value || selectedTask.council}
+          currentFilters={selectedTask.filters || []}
+          onFiltersUpdated={() => {
+            loadData()
+            // Refresh the selected task details
+            if (selectedTask) {
+              handleViewTaskDetails(selectedTask)
+            }
+          }}
+        />
+      )}
     </>
   )
 }

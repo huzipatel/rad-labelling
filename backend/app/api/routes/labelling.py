@@ -141,11 +141,19 @@ async def get_task_locations(
         elif task.group_field == "road_classification":
             base_query = base_query.where(Location.road_classification == task.group_value)
         
+        # Apply additional task filters (e.g., BusStopType = "MKD")
+        if task.filters:
+            from app.utils.task_filters import apply_task_filters
+            base_query = apply_task_filters(base_query, task.filters)
+        
+        # Get total count with filters applied
+        count_result = await db.execute(select(func.count()).select_from(base_query.subquery()))
+        total_locations = count_result.scalar() or 0
+        
         locations_result = await db.execute(
             base_query.offset(offset).limit(page_size).order_by(Location.identifier)
         )
         locations = locations_result.scalars().all()
-        total_locations = task.total_locations
     
     # Get labels for these locations
     location_ids = [loc.id for loc in locations]
@@ -279,6 +287,11 @@ async def get_location_by_id(
     elif task.group_field == "road_classification":
         base_query = base_query.where(Location.road_classification == task.group_value)
     
+    # Apply additional task filters (e.g., BusStopType = "MKD")
+    if task.filters:
+        from app.utils.task_filters import apply_task_filters
+        base_query = apply_task_filters(base_query, task.filters)
+    
     # Get all locations ordered by identifier to find the index
     locations_result = await db.execute(
         base_query.order_by(Location.identifier)
@@ -376,6 +389,11 @@ async def get_location_for_labelling(
             if task.group_value:
                 base_query = base_query.where(Location.road_classification == task.group_value)
                 filter_applied = True
+        
+        # Apply additional task filters (e.g., BusStopType = "MKD")
+        if task.filters:
+            from app.utils.task_filters import apply_task_filters
+            base_query = apply_task_filters(base_query, task.filters)
         
         # First, count total locations to give better error messages
         count_result = await db.execute(select(func.count()).select_from(base_query.subquery()))
@@ -581,6 +599,11 @@ async def search_location(
         base_query = base_query.where(Location.combined_authority == task.group_value)
     elif task.group_field == "road_classification":
         base_query = base_query.where(Location.road_classification == task.group_value)
+    
+    # Apply additional task filters (e.g., BusStopType = "MKD")
+    if task.filters:
+        from app.utils.task_filters import apply_task_filters
+        base_query = apply_task_filters(base_query, task.filters)
     
     # Search by identifier within task scope
     search_result = await db.execute(

@@ -96,6 +96,15 @@ class Task(Base):
         default=None
     )
     
+    # Additional filters for location filtering
+    # Format: [{"field": "BusStopType", "operator": "equals", "value": "MKD"}, ...]
+    # Supported operators: equals, not_equals, contains, in_list
+    filters: Mapped[Optional[List]] = mapped_column(
+        JSONB,
+        nullable=True,
+        default=list
+    )
+    
     # Relationships
     location_type: Mapped["LocationType"] = relationship(
         "LocationType",
