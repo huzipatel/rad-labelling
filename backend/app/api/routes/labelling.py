@@ -320,41 +320,90 @@ async def get_location_for_labelling(
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Handle sample tasks differently - they have specific location IDs
-    if task.is_sample and task.sample_location_ids:
+    if task.is_sample:
+        if not task.sample_location_ids or len(task.sample_location_ids) == 0:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Sample task has no location IDs configured. Task: {task.name or task.id}"
+            )
+        
         # Sample task - get location from the sample_location_ids list
         if location_index >= len(task.sample_location_ids):
-            raise HTTPException(status_code=404, detail="Location index out of range")
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Location index {location_index} out of range. Task has {len(task.sample_location_ids)} locations."
+            )
         
         location_id = uuid.UUID(task.sample_location_ids[location_index])
         location_result = await db.execute(
             select(Location).where(Location.id == location_id)
         )
         location = location_result.scalar_one_or_none()
+        
+        if not location:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Location {location_id} not found in database. It may have been deleted."
+            )
     else:
         # Regular task - build query based on task's group_field
+        if not task.location_type_id:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Task has no location type configured. Task: {task.name or task.id}"
+            )
+        
         base_query = select(Location).where(Location.location_type_id == task.location_type_id)
         
         # Filter by the task's grouping
+        filter_applied = False
         if task.group_field and task.group_field.startswith("original_"):
             original_key = task.group_field.replace("original_", "")
             base_query = base_query.where(
                 text(f"original_data->>'{original_key}' = :group_value")
             ).params(group_value=task.group_value)
+            filter_applied = True
         elif task.group_field == "council" or not task.group_field:
-            base_query = base_query.where(Location.council == (task.group_value or task.council))
+            filter_value = task.group_value or task.council
+            if filter_value:
+                base_query = base_query.where(Location.council == filter_value)
+                filter_applied = True
         elif task.group_field == "combined_authority":
-            base_query = base_query.where(Location.combined_authority == task.group_value)
+            if task.group_value:
+                base_query = base_query.where(Location.combined_authority == task.group_value)
+                filter_applied = True
         elif task.group_field == "road_classification":
-            base_query = base_query.where(Location.road_classification == task.group_value)
+            if task.group_value:
+                base_query = base_query.where(Location.road_classification == task.group_value)
+                filter_applied = True
+        
+        # First, count total locations to give better error messages
+        count_result = await db.execute(select(func.count()).select_from(base_query.subquery()))
+        total_matching = count_result.scalar()
+        
+        if total_matching == 0:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"No locations found for task. group_field={task.group_field}, group_value={task.group_value}, council={task.council}, location_type_id={task.location_type_id}"
+            )
+        
+        if location_index >= total_matching:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Location index {location_index} out of range. Task has {total_matching} matching locations."
+            )
         
         # Get location by index
         location_result = await db.execute(
             base_query.order_by(Location.identifier).offset(location_index).limit(1)
         )
         location = location_result.scalar_one_or_none()
-    
-    if not location:
-        raise HTTPException(status_code=404, detail="Location not found")
+        
+        if not location:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Location at index {location_index} not found. This may be a database consistency issue."
+            )
     
     # Get images for this location
     images_result = await db.execute(
