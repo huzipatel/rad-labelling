@@ -23,6 +23,13 @@ if config.config_file_name is not None:
 # Override sqlalchemy.url with environment variable if set
 database_url = os.getenv("DATABASE_URL")
 if database_url:
+    # Convert postgres:// to postgresql+asyncpg:// for asyncpg compatibility
+    # Render uses postgres:// but asyncpg requires postgresql+asyncpg://
+    if database_url.startswith("postgres://"):
+        database_url = database_url.replace("postgres://", "postgresql+asyncpg://", 1)
+    elif database_url.startswith("postgresql://") and "+asyncpg" not in database_url:
+        database_url = database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    print(f"[Alembic] Using DATABASE_URL (converted for asyncpg)")
     config.set_main_option("sqlalchemy.url", database_url)
 
 # Model's MetaData object for autogenerate support

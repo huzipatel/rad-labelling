@@ -195,10 +195,42 @@ async def init_db() -> None:
             if not result.fetchone():
                 print("[Database] Adding sample_location_ids column...")
                 await conn.execute(text("ALTER TABLE tasks ADD COLUMN sample_location_ids JSONB"))
+            
+            # filters (for task filtering feature)
+            result = await conn.execute(text(
+                "SELECT column_name FROM information_schema.columns WHERE table_name='tasks' AND column_name='filters'"
+            ))
+            if not result.fetchone():
+                print("[Database] Adding filters column...")
+                await conn.execute(text("ALTER TABLE tasks ADD COLUMN filters JSONB DEFAULT '[]'::jsonb"))
         
         print("[Database] Tasks table columns updated")
     except Exception as e:
         print(f"[Database] Error adding task columns: {e}")
+    
+    # Add label fields (number_of_faces, screen_type)
+    print("[Database] Adding missing columns to labels table...")
+    try:
+        async with engine.begin() as conn:
+            # number_of_faces
+            result = await conn.execute(text(
+                "SELECT column_name FROM information_schema.columns WHERE table_name='labels' AND column_name='number_of_faces'"
+            ))
+            if not result.fetchone():
+                print("[Database] Adding number_of_faces column...")
+                await conn.execute(text("ALTER TABLE labels ADD COLUMN number_of_faces INTEGER DEFAULT 2"))
+            
+            # screen_type
+            result = await conn.execute(text(
+                "SELECT column_name FROM information_schema.columns WHERE table_name='labels' AND column_name='screen_type'"
+            ))
+            if not result.fetchone():
+                print("[Database] Adding screen_type column...")
+                await conn.execute(text("ALTER TABLE labels ADD COLUMN screen_type VARCHAR(50)"))
+        
+        print("[Database] Labels table columns updated")
+    except Exception as e:
+        print(f"[Database] Error adding label columns: {e}")
     
     # Create GSV API keys table if it doesn't exist
     print("[Database] Creating GSV API keys table...")
