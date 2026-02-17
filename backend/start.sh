@@ -1,11 +1,28 @@
 #!/bin/bash
 
+set -e  # Exit on error
+
 echo "=== Starting Application ==="
 echo "Redis URL: ${REDIS_URL:-redis://localhost:6379/0}"
 
 # Run database migrations
 echo "Running database migrations..."
-alembic upgrade head || echo "Migration warning (may already be applied)"
+echo "Checking current migration state..."
+alembic current || echo "No migrations applied yet"
+
+echo "Applying migrations..."
+if alembic upgrade head; then
+    echo "✓ Migrations completed successfully"
+else
+    echo "✗ Migration failed! Check the error above."
+    echo "Attempting to show migration history..."
+    alembic history --verbose || true
+    # Continue anyway - the app might work if tables already exist
+    echo "Continuing startup despite migration error..."
+fi
+
+echo "Migration state after upgrade:"
+alembic current || echo "Could not determine migration state"
 
 # Start Celery worker in background with beat scheduler
 # High concurrency for maximum download throughput with multiple API keys
